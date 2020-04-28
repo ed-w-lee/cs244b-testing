@@ -23,6 +23,10 @@ import java.util.concurrent.atomic.AtomicLong;
 @RestController
 public class Database {
 
+    public void Database(){
+        System.out.println("CONSTRUCTOR");
+    }
+
     @Value("${server.port}")
     public int SERVER_PORT;
 
@@ -41,6 +45,7 @@ public class Database {
     Map<Long, String> memoryCommit = new ConcurrentHashMap<>();
 
     public static final String emptyResponse = "{}";
+    public final String TRID_FIELD_NAME = "trid";
 
 
     @RequestMapping(value="/2pc", method = RequestMethod.GET, produces = "application/json")
@@ -61,13 +66,15 @@ public class Database {
     @ResponseBody
     public ResponseEntity memorySet(@RequestBody String newValue) {
 
+        ResponseEntity response = new ResponseEntity(HttpStatus.NOT_MODIFIED);
         try{
             long currentTransactionId = getNewTransactionId();
-            System.out.printf("Message: Transaction CREATE  - %d.\n", currentTransactionId);
+            String currentTransactionIdString = getNewTransactionString(currentTransactionId);
+            System.out.printf("Message: Transaction CREATE  - %s.\n", currentTransactionIdString);
 
             // request VOTE for all nodes
             Map<String, String> sendMessage = new HashMap<>();
-            sendMessage.put("trid",String.valueOf(currentTransactionId));
+            sendMessage.put(TRID_FIELD_NAME,String.valueOf(currentTransactionId));
 
             JsonParser stringParser = JsonParserFactory.getJsonParser();
             Map<String, Object> requstVals = stringParser.parseMap(newValue);
@@ -77,36 +84,36 @@ public class Database {
 
             ObjectMapper objectMapper = new ObjectMapper();
             String messageToApply = objectMapper.writeValueAsString(sendMessage);
-            System.out.printf("Message: VOTE START.\n");
+            System.out.printf("Message: VOTE ALL_START - %s.\n", currentTransactionIdString);
             if (putToUrlAll("localhost", "/vote", messageToApply, false)){
-                System.out.printf("Message: VOTE SUCCESS.\n");
-                System.out.printf("Message: COMMIT START.\n");
+                System.out.printf("Message: VOTE ALL_SUCCESS - %s\n", currentTransactionIdString);
+                System.out.printf("Message: COMMIT ALL_START - %s.\n", currentTransactionIdString);
                 if (putToUrlAll("localhost", "/commit", messageToApply, false)){
-                    System.out.printf("Message: COMMIT SUCCESS.\n");
-                    System.out.printf("Message: APPLY START.\n");
+                    System.out.printf("Message: COMMIT ALL_SUCCESS - %s\n", currentTransactionIdString);
+                    System.out.printf("Message: APPLY ALL_START - %s\n", currentTransactionIdString);
                     if (putToUrlAll("localhost", "/apply", messageToApply, true)){
-                        System.out.printf("Message: APPLY SUCCESS.\n");
+                        System.out.printf("Message: ALL_APPLY SUCCESS - %s\n", currentTransactionIdString);
+                        response = new ResponseEntity(HttpStatus.OK);
                     } else {
-                        System.out.printf("Message: NOT ALL APPLIED.\n");
+                        System.out.printf("Warning: NOT ALL APPLIED - %s\n", currentTransactionIdString);
                     }
                 } else {
-                    System.out.printf("Message: COMMIT FAIL.\n");
+                    System.out.printf("Warning: ALL_COMMIT FAIL - %s\n", currentTransactionIdString);
                     putToUrlAll("localhost", "/abort", messageToApply, true);
-                    System.out.printf("Message: ABORT SENT.\n");
+                    System.out.printf("Warning: ABORT SENT - %s\n", currentTransactionIdString);
                 }
             } else {
-                System.out.printf("Message: VOTE FAIL.\n");
+                System.out.printf("Warning: ALL_VOTE FAIL - %s\n", currentTransactionIdString);
                 putToUrlAll("localhost", "/abort", messageToApply, true);
-                System.out.printf("Message: ABORT SENT.\n");
+                System.out.printf("Warning: ABORT SENT - %s\n", currentTransactionIdString);
             }
 
         } catch (Exception e){
             System.out.printf("Error: failed to apply message -  %s.\n", newValue);
             e.printStackTrace();
-            return new ResponseEntity(HttpStatus.NOT_MODIFIED);
         }
 
-        return new ResponseEntity(HttpStatus.OK);
+        return response;
     }
 
     @RequestMapping(value="/vote", method = RequestMethod.PUT, produces = "application/json")
@@ -115,21 +122,22 @@ public class Database {
 
         JsonParser stringParser = JsonParserFactory.getJsonParser();
         Map<String, Object> requstVals = stringParser.parseMap(jsonVote);
-        long voteTransactionId = Long.parseLong((String)requstVals.get("trid"));
+        long voteTransactionId = Long.parseLong((String)requstVals.get(TRID_FIELD_NAME));
         try {
 
-            System.out.printf("Message: VOTE REQUESTED for transaction - %d.\n", voteTransactionId);
+            System.out.printf("Message: VOTE REQUESTED for transaction - %s.\n", getNewTransactionString(voteTransactionId));
             int nowRetry = SERVER_RETRY;
             while (nowRetry-- > 0 && !currentTransactionLock.compareAndSet(-1, voteTransactionId)){
-                Thread.sleep(100);
+                Thread.sleep(17*(SERVER_RETRY-nowRetry));
+                System.out.printf("Warning: retry - %d vote for %s\n", nowRetry, getNewTransactionString(voteTransactionId));
             }
 
             if (voteTransactionId != currentTransactionLock.get()){
-                System.out.printf("Message: VOTE FAIL Transaction - %d.\n", voteTransactionId);
+                System.out.printf("Warning: VOTE FAIL Transaction - %s.\n", getNewTransactionString(voteTransactionId));
                 return new ResponseEntity(HttpStatus.NOT_MODIFIED);
             }
             // need to start timeout for the node
-            System.out.printf("Message: VOTE APPROVE Transaction - %d.\n", voteTransactionId);
+            System.out.printf("Message: VOTE APPROVE Transaction - %s.\n", getNewTransactionString(voteTransactionId));
 
         } catch (Exception e){
             System.out.printf("Critical: Unexpected error.\n");
@@ -148,15 +156,15 @@ public class Database {
         JsonParser stringParser = JsonParserFactory.getJsonParser();
         Map<String, Object> requstVals = stringParser.parseMap(jsonMemory);
 
-        long currentTransactionId = Long.parseLong((String)requstVals.get("trid"));
+        long currentTransactionId = Long.parseLong((String)requstVals.get(TRID_FIELD_NAME));
 
         try {
 
-            System.out.printf("Message: COMMIT START  - %d.\n", currentTransactionId);
+            System.out.printf("Message: COMMIT START  - %s.\n", getNewTransactionString(currentTransactionId));
 
             if (currentTransactionId != currentTransactionLock.get()){
-                System.out.printf("Message: COMMIT FAIL, wrong transaction in request %d != %d.\n"
-                        , currentTransactionId, currentTransactionLock.get());
+                System.out.printf("Warning: COMMIT FAIL, wrong transaction in request %s != %s.\n"
+                        , getNewTransactionString(currentTransactionId), getNewTransactionString(currentTransactionLock.get()));
                 return new ResponseEntity(HttpStatus.NOT_MODIFIED);
             }
 
@@ -167,11 +175,11 @@ public class Database {
             e.printStackTrace();
             return new ResponseEntity(HttpStatus.INTERNAL_SERVER_ERROR);
         } finally {
-            System.out.printf("Message: Transaction RELEASE - %d.\n", currentTransactionId);
+            System.out.printf("Message: Transaction RELEASE - %s.\n", getNewTransactionString(currentTransactionId));
             boolean releaseRes = currentTransactionLock.compareAndSet(currentTransactionId, -1);
             if (!releaseRes){
-                System.out.printf("Warning: Current Transaction RELEASE %d fail, the transaction was not active.\n"
-                        , currentTransactionId);
+                System.out.printf("Warning: Current Transaction RELEASE %s fail, the transaction was not active.\n"
+                        , getNewTransactionString(currentTransactionId));
             }
         }
 
@@ -185,11 +193,15 @@ public class Database {
         JsonParser stringParser = JsonParserFactory.getJsonParser();
         Map<String, Object> requstVals = stringParser.parseMap(jsonMemory);
 
-        long currentTransactionId = Long.parseLong((String)requstVals.get("trid"));
+        long currentTransactionId = Long.parseLong((String)requstVals.get(TRID_FIELD_NAME));
 
         try {
 
-            System.out.printf("Message: APPLY START  - %d.\n", currentTransactionId);
+            System.out.printf("Message: APPLY START  - %s.\n", getNewTransactionString(currentTransactionId));
+            if (!memoryCommit.containsKey(currentTransactionId)){
+                System.out.printf("Warning: APPLY FAILED, cannot find the transaction in log  - %s.\n", getNewTransactionString(currentTransactionId));
+                return new ResponseEntity(HttpStatus.NOT_MODIFIED);
+            }
 
             for (Map.Entry<String, Object> value : requstVals.entrySet()){
                 String varName = value.getKey();
@@ -219,11 +231,11 @@ public class Database {
         JsonParser stringParser = JsonParserFactory.getJsonParser();
         Map<String, Object> requstVals = stringParser.parseMap(jsonMemory);
 
-        long currentTransactionId = Long.parseLong((String)requstVals.get("trid"));
+        long currentTransactionId = Long.parseLong((String)requstVals.get(TRID_FIELD_NAME));
 
         try {
 
-            System.out.printf("Message: ABORT - %d.\n", currentTransactionId);
+            System.out.printf("Warning: ABORT - %s.\n", getNewTransactionString(currentTransactionId));
             currentTransactionLock.compareAndSet(currentTransactionId, -1);
             memoryCommit.remove(currentTransactionId);
 
@@ -240,50 +252,63 @@ public class Database {
         return ((availableTransactionId.getAndAdd(1) << 16) | SERVER_PORT);
     }
 
-    private boolean putToUrlAll(String host, String com, String message, boolean retryForever) throws Exception{
-        for (String port : SERVER_LIST.split(",")){
-            int nextPort = Integer.valueOf(port);
-            boolean res = false;
-            int retryCount = SERVER_MAX_FULLLRETRY;
-            do{
-                res = (putToUrl(host, nextPort, com, message).getStatusCode() == HttpStatus.OK);
-                Thread.sleep(100);
-            } while (!res && retryForever && retryCount-- > 0);
-            if (retryCount <= 0){
-                System.out.printf("Warning: last message %s.\n", message);
-                System.out.printf("Warning: last host %s com %s port %d.\n", host, com, port);
-                System.out.printf("Critical: Cannot retry last retryForever request, going down.\n");
-                Runtime.getRuntime().exit(0);
-            }
+    private String getNewTransactionString(long trid) {
+        if (trid > 0){
+            long a = trid % (1<<16);
+            long b = (trid / (1<<16));
+            return String.format("%d-%d", (trid % (1<<16)), (trid / (1<<16)));
+        } else {
+            return String.valueOf(trid);
         }
-        return true;
     }
 
-    private ResponseEntity putToUrl(String host, int port, String com, String message){
-        ResponseEntity responseResult = new ResponseEntity(HttpStatus.NOT_MODIFIED);
+    private boolean putToUrlAll(String host, String com, String message, boolean retryForever) throws Exception{
+        boolean res = false;
+        for (String port : SERVER_LIST.split(",")){
+            int nextPort = Integer.valueOf(port);
+            res = (putToUrl(host, nextPort, com, message, retryForever).getStatusCode() == HttpStatus.OK);
+
+            if (!res){
+                System.out.printf("Warning: last message %s.\n", message);
+                System.out.printf("Warning: last host %s com %s port %d.\n", host, com, nextPort);
+                System.out.printf("Critical: Cannot retry last retryForever request, going down.\n");
+                return false;
+                //Runtime.getRuntime().exit(0);
+            }
+        }
+        return res;
+    }
+
+    private ResponseEntity putToUrl(String host, int port, String com, String message, boolean retryForever){
         try{
             URL url = new URL("http", host, port, com);
             HttpURLConnection con = (HttpURLConnection) url.openConnection();
-            con.setRequestMethod("PUT");
-            con.setRequestProperty("Content-Type", "application/json; utf-8");
-            con.setRequestProperty("Accept", "application/json");
-            con.setDoOutput(true);
-            try(OutputStream os = con.getOutputStream()) {
-                byte[] input = message.getBytes("utf-8");
-                os.write(input, 0, input.length);
-            }
-            con.setConnectTimeout(4000);
-            con.setReadTimeout(4000);
-            int responseStatus = con.getResponseCode();
-            if (responseStatus == 200) {
-                responseResult = new ResponseEntity(HttpStatus.OK);
-            }
+            int retryCount = SERVER_MAX_FULLLRETRY;
+            do{
+                con.setRequestMethod("PUT");
+                con.setRequestProperty("Content-Type", "application/json; utf-8");
+                con.setRequestProperty("Accept", "application/json");
+                con.setDoOutput(true);
+                try(OutputStream os = con.getOutputStream()) {
+                    byte[] input = message.getBytes("utf-8");
+                    os.write(input, 0, input.length);
+                }
+                con.setConnectTimeout(4000);
+                con.setReadTimeout(4000);
+                int responseStatus = con.getResponseCode();
+                if (responseStatus == 200) {
+                    con.disconnect();
+                    return  new ResponseEntity(HttpStatus.OK);
+                }
+                Thread.sleep(17*(SERVER_MAX_FULLLRETRY-retryCount));
+                System.out.printf("Warning: retry %d host %s com %s port %d.\n", retryCount, host, com, port);
+            }while (retryForever && retryCount-- > 0);
             con.disconnect();
-        } catch ( Exception e){
+        } catch ( Exception e) {
             e.printStackTrace();
             System.out.printf("Error: Unexpected exception\n");
         }
-        return responseResult;
+        return new ResponseEntity(HttpStatus.NOT_MODIFIED);
     }
 
 }
