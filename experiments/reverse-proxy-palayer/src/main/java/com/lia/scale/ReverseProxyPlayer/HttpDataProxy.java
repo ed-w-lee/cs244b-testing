@@ -25,7 +25,7 @@ public class HttpDataProxy extends Thread  {
             Socket client = null, server = null;
             // connects a socket to the server
             long threadId = Thread.currentThread().getId();
-            System.out.printf("Message:%d: NEW proxy, tread id - %d\n", threadId, threadId);
+            //System.out.printf("Message:%d: NEW proxy, tread id - %d\n", threadId, threadId);
             try {
                 server = new Socket(SERVER_URL, SERVER_PORT);
             } catch (IOException e) {
@@ -37,13 +37,29 @@ public class HttpDataProxy extends Thread  {
             final InputStream inFromServer = server.getInputStream();
             final OutputStream outToServer = server.getOutputStream();
 
+            final int serverPort = server.getPort();
+
             new Thread() {
                 public void run() {
                     int bytes_read;
                     try {
                         while ((bytes_read = inFromClient.read(request)) != -1){
                             String requestString = new String(request,0, bytes_read);
-                            System.out.printf("REQUEST:%d: %s\n", threadId, requestString);
+                            //System.out.printf("REQUEST:%d: %s\n", threadId, requestString);
+                            //REQUEST:11: GET /2pc
+                            //REQUEST:11: PUT /2pc HTTP/1.1
+                            //REQUEST:13: {"a":"1","trid":"24001"}
+                            //REQUEST:13: PUT /vote HTTP/1.1
+                            //REQUEST:13: PUT /commit HTTP/1.1
+                            //REQUEST:13: PUT /apply HTTP/1.1
+                            int httpPos = requestString.indexOf("HTTP/1.1");
+                            if (httpPos >= 0){
+                                int putPos = requestString.indexOf("PUT /");
+                                if (putPos >= 0 && putPos < httpPos){
+                                    String httpCom = requestString.substring(putPos + 5, httpPos - 1);
+                                    System.out.printf("%d,%d,%s\n", sClient.getLocalPort(), serverPort, httpCom);
+                                }
+                            }
                             // TODO: respond to server/delay/skip?
 
                             outToServer.write(request, 0, bytes_read);
@@ -66,7 +82,7 @@ public class HttpDataProxy extends Thread  {
                 while ((bytes_read = inFromServer.read(reply)) != -1) {
 
                     String requestString = new String(reply,0, bytes_read);
-                    System.out.printf("RESPONSE:%d: %s\n", threadId, requestString);
+                    //System.out.printf("RESPONSE:%d: %s\n", threadId, requestString);
                     // TODO: respond to server/delay/skip?
 
                     outToClient.write(reply, 0, bytes_read);
@@ -84,7 +100,7 @@ public class HttpDataProxy extends Thread  {
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
-                System.out.printf("Message:%d: CLOSE proxy, tread id - %d\n", threadId, threadId);
+                //System.out.printf("Message:%d: CLOSE proxy, tread id - %d\n", threadId, threadId);
             }
             outToClient.close();
             sClient.close();

@@ -14,17 +14,17 @@ public class Application {
             // try proxy request
             // request to: 14001
 
-            System.out.println("Message: START Listening for connection on port 14001");
+            //System.out.println("Message: START Listening for connection on port 14001");
             try {
                 String host = "localhost";
                 int remoteport = 24001;
                 int localport = 14001;
                 // Print a start-up message
-                System.out.println("Starting proxy for " + host + ":" + remoteport
-                        + " on port " + localport);
+                //System.out.println("Starting proxy for " + host + ":" + remoteport + " on port " + localport);
                 ServerSocket server = new ServerSocket(localport);
                 while (true) {
                     new HttpDataProxy(server.accept(), host, remoteport);
+                    //System.out.println("NEW ACCEPT");
                 }
             } catch (Exception e) {
                 System.err.println(e);
