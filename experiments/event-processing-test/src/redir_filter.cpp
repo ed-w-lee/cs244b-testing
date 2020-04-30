@@ -4,15 +4,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <linux/filter.h>
 #include <linux/limits.h>
 #include <linux/seccomp.h>
 #include <linux/unistd.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <sys/prctl.h>
 #include <sys/ptrace.h>
 #include <sys/reg.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/user.h>
 #include <sys/wait.h>
@@ -30,6 +33,16 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Usage: %s <prog> <arg1> ... <argN>\n", argv[0]);
     return 1;
   }
+
+  sockaddr_in oldaddr;
+  oldaddr.sin_family = AF_INET;
+  oldaddr.sin_port = htons(4242);
+  oldaddr.sin_addr.s_addr = inet_addr("127.0.0.11");
+
+  sockaddr_in newaddr;
+  newaddr.sin_family = AF_INET;
+  newaddr.sin_port = htons(8383);
+  newaddr.sin_addr.s_addr = inet_addr("127.0.0.21");
 
   if ((pid = fork()) == 0) {
     /* If open syscall, trace */
@@ -66,7 +79,7 @@ int main(int argc, char **argv) {
     kill(getpid(), SIGSTOP);
     return execvp(argv[1], argv + 1);
   } else {
-    Manager manager(pid);
+    Manager manager(pid, oldaddr, newaddr);
     while (manager.to_next_event())
       ;
     return 0;

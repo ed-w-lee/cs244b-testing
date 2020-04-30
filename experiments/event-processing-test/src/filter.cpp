@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <fstream>
 #include <linux/filter.h>
@@ -90,11 +91,42 @@ void _redirect_file(pid_t child, const char *file, int arg) {
   /* Change argument to open */
   ptrace(PTRACE_POKEUSER, child, sizeof(long) * offs, file_addr);
 }
+
+void _read_from_proc(pid_t child, char *out, char *addr, size_t len) {
+  size_t i = 0;
+  while (i < len) {
+    long val;
+
+    val = ptrace(PTRACE_PEEKTEXT, child, addr + i, NULL);
+    if (val == -1) {
+      exit(1);
+    }
+
+    memcpy(out + i, &val, sizeof(long));
+    i += sizeof(long);
+  }
+}
+
+void _write_to_proc(pid_t child, char *to_write, char *addr, size_t len) {
+  size_t i = 0;
+  while (i < len) {
+    char val[sizeof(long)];
+    memcpy(val, to_write + i, sizeof(long));
+
+    long ret = ptrace(PTRACE_POKETEXT, child, addr + i, *(long *)val);
+    if (ret == -1) {
+      exit(1);
+    }
+
+    i += sizeof(long);
+  }
+}
 } // namespace
 
 namespace Filter {
 
-Manager::Manager(pid_t pid) : child{pid}, fds() {
+Manager::Manager(pid_t pid, sockaddr_in old_addr, sockaddr_in new_addr)
+    : child{pid}, old_addr(old_addr), new_addr(new_addr), fds(), sockfds() {
   int status;
   waitpid(pid, &status, 0);
   ptrace(PTRACE_SETOPTIONS, pid, 0,
@@ -129,8 +161,34 @@ bool Manager::to_next_event() {
       case SYS_fsync:
         handle_fsync();
         continue;
+
+      case SYS_socket:
+        handle_socket();
+        continue;
+      case SYS_bind:
+        handle_bind();
+        continue;
+      case SYS_getsockname:
+        handle_getsockname();
+        continue;
+      // case SYS_connect:
+      //   handle_connect();
+      //   continue;
+      // case SYS_accept:
+      // case SYS_accept4:
+      //   handle_accept();
+      //   continue;
+      // case SYS_sendto:
+      //   handle_send();
+      //   continue;
+      // case SYS_recvfrom:
+      //   handle_recv();
+      //   continue;
+      // case SYS_read:
+      //   handle_read();
+      //   continue;
       default:
-        printf("ignored syscall: %d\n", my_syscall);
+        // printf("ignored syscall: %d\n", my_syscall);
         continue;
       }
     }
@@ -249,6 +307,86 @@ void Manager::handle_fsync() {
     std::ifstream src(back_file, std::ios::binary);
     std::ofstream dst(orig_file, std::ios::binary);
     dst << src.rdbuf();
+  }
+}
+
+void Manager::handle_socket() {
+  printf("handling socket\n");
+
+  struct user_regs_struct regs;
+  ptrace(PTRACE_GETREGS, child, 0, &regs);
+  int domain = regs.rdi;
+  int type = regs.rsi;
+  int protocol = regs.rdx;
+
+  printf("domain: %d, type: %d, protocol: %d\n", domain, type, protocol);
+
+  if (domain == AF_INET && type & SOCK_STREAM) {
+    // when TCP, track the socket being returned
+    int status;
+    ptrace(PTRACE_SYSCALL, child, 0, 0);
+    waitpid(child, &status, 0);
+    if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+      uint64_t fd =
+          (uint64_t)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RAX, 0);
+      printf("sockfd: %lu\n", fd);
+      sockfds[fd] = false;
+    }
+  }
+}
+
+void Manager::handle_bind() {
+  printf("handling bind\n");
+
+  struct user_regs_struct regs;
+  ptrace(PTRACE_GETREGS, child, 0, &regs);
+  int sockfd = regs.rdi;
+  unsigned long long sockaddr_ptr = regs.rsi;
+  size_t addrlen = regs.rdx;
+
+  sockaddr_in curr_addr;
+  printf("attempt to read from proc\n");
+  _read_from_proc(child, (char *)&curr_addr, (char *)sockaddr_ptr, addrlen);
+
+  printf("sockfd: %d oldaddr: %d %d %s\n", sockfd, curr_addr.sin_family,
+         ntohs(curr_addr.sin_port), inet_ntoa(curr_addr.sin_addr));
+
+  if (curr_addr.sin_port == old_addr.sin_port &&
+      strcmp(inet_ntoa(curr_addr.sin_addr), inet_ntoa(old_addr.sin_addr)) ==
+          0) {
+    // overwrite the address, in the same location
+    // NOTE - we're assuming that they're the same width
+    printf("%lu\n", addrlen);
+    _write_to_proc(child, (char *)&new_addr, (char *)sockaddr_ptr, addrlen);
+    sockfds[sockfd] = true;
+  }
+}
+
+void Manager::handle_getsockname() {
+  printf("handling getsockname\n");
+  struct user_regs_struct regs;
+  ptrace(PTRACE_GETREGS, child, 0, &regs);
+  int sockfd = regs.rdi;
+  unsigned long long sockaddr_ptr = regs.rsi;
+  unsigned long long addrlen_ptr = regs.rdx;
+
+  auto got = sockfds.find(sockfd);
+  if (got == sockfds.end() || !got->second) {
+    // not redirected, just ignore
+    return;
+  }
+
+  printf("undoing redirect\n");
+  long addrlen_lng;
+  _read_from_proc(child, (char *)&addrlen_lng, (char *)addrlen_ptr,
+                  sizeof(long));
+  long addrlen = (int)addrlen_lng;
+
+  int status;
+  ptrace(PTRACE_SYSCALL, child, 0, 0);
+  waitpid(child, &status, 0);
+  if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+    _write_to_proc(child, (char *)&old_addr, (char *)sockaddr_ptr, addrlen);
   }
 }
 

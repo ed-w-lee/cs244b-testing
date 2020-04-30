@@ -1,7 +1,9 @@
 #pragma once
 
+#include <netinet/ip.h>
 #include <stdint.h>
 #include <string>
+#include <sys/socket.h>
 #include <sys/types.h>
 #include <syscall.h>
 #include <unordered_map>
@@ -9,13 +11,17 @@
 namespace Filter {
 
 const uint32_t syscalls_intercept[] = {
-    SYS_open, SYS_openat, SYS_fsync,   SYS_fdatasync, SYS_read,    SYS_write,
-    SYS_stat, SYS_mknod,  SYS_accept4, SYS_accept,    SYS_connect, SYS_socket,
-};
+    // filesystem-related
+    SYS_open, SYS_openat, SYS_fsync, SYS_fdatasync, SYS_read, SYS_write,
+    SYS_stat, SYS_mknod,
+    // network-related
+    SYS_socket, SYS_bind, SYS_getsockname, SYS_accept4, SYS_accept, SYS_connect,
+    SYS_sendto, SYS_sendmsg, SYS_sendmmsg, SYS_recvfrom, SYS_recvmsg,
+    SYS_recvmmsg};
 
 class Manager {
 public:
-  Manager(pid_t pid);
+  Manager(pid_t pid, sockaddr_in old_addr, sockaddr_in new_addr);
 
   bool to_next_event();
 
@@ -25,7 +31,10 @@ public:
 
 private:
   pid_t child;
+  sockaddr_in old_addr, new_addr;
+
   std::unordered_map<int, std::string> fds;
+  std::unordered_map<int, bool> sockfds; // is_redirected
 
   const char *suffix = ".__bk";
   const char *prefix = "/tmp/our_cs244b_test_13245646/";
@@ -34,6 +43,19 @@ private:
   void handle_stat();
   void handle_mknod();
   void handle_fsync();
+
+  // TODO - make sure we handle non-synchronous reads / writes
+  // void handle_read();
+  // void handle_write();
+
+  void handle_socket(); // only track AF_INET, SOCK_STREAM, IPPROTO_IP addresses
+                        // (hard to say if this is actually needed)
+  void handle_bind();   // redirect bind to some other addr
+  void handle_getsockname(); // redirect back to original addr
+  // void handle_accept();
+  void handle_connect();
+  // void handle_send();
+  // void handle_recv();
 };
 
 } // namespace Filter

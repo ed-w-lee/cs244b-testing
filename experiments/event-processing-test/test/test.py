@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import socket
 
 def read_file(file):
 	with open(file, 'r', buffering=100) as fin:
@@ -24,12 +25,22 @@ parser.add_argument('networkaddr', nargs='?', default=None, help='address where 
 
 args = parser.parse_args()
 
-files = [os.path.join(args.diskdir, str(i)) for i in range(5)]
-for f in files:
-	if not os.path.exists(f):
-		os.mknod(f)
+# files = [os.path.join(args.diskdir, str(i)) for i in range(5)]
+# for f in files:
+# 	if not os.path.exists(f):
+# 		os.mknod(f)
+# 
+# for _ in range(2):
+# 	vals = [read_file(f) for f in files]
+# 	print(vals)
+# 	[write_file(f, vals[i] + i * 100) for i,f in enumerate(files)]
 
-for _ in range(2):
-	vals = [read_file(f) for f in files]
-	print(vals)
-	[write_file(f, vals[i] + i * 100) for i,f in enumerate(files)]
+host = '127.0.0.1'
+port = 12345
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind((host, port))
+print(s.getsockname())
+s.listen(1)
+conn, addr = s.accept()
+data = conn.recv(1024)
+print('received ', repr(data), ' from ', addr)
