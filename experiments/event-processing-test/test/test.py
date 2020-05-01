@@ -3,6 +3,7 @@
 import argparse
 import os
 import socket
+import asyncio
 
 def read_file(file):
 	with open(file, 'r', buffering=100) as fin:
@@ -35,12 +36,18 @@ args = parser.parse_args()
 # 	print(vals)
 # 	[write_file(f, vals[i] + i * 100) for i,f in enumerate(files)]
 
-host = '127.0.0.1'
-port = 12345
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.bind((host, port))
-print(s.getsockname())
-s.listen(1)
-conn, addr = s.accept()
-data = conn.recv(1024)
-print('received ', repr(data), ' from ', addr)
+async def handle_client(reader, writer):
+	request = (await reader.read(255)).decode('utf-8')
+	res = str(request)
+	writer.write(res.encode('utf-8'))
+	await writer.drain()
+	writer.close()
+
+# async def run_server():
+# 	while True:
+# 		client, _ = await loop.sock_accept(s)
+# 		loop.create_task(handle_client(client))
+
+loop = asyncio.get_event_loop()
+loop.create_task(asyncio.start_server(handle_client, '127.0.0.11', 4242))
+loop.run_forever()

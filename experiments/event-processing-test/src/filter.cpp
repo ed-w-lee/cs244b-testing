@@ -127,74 +127,90 @@ namespace Filter {
 
 Manager::Manager(pid_t pid, sockaddr_in old_addr, sockaddr_in new_addr)
     : child{pid}, old_addr(old_addr), new_addr(new_addr), fds(), sockfds() {
+  printf("creating\n");
   int status;
   waitpid(pid, &status, 0);
   ptrace(PTRACE_SETOPTIONS, pid, 0,
          PTRACE_O_TRACESECCOMP | PTRACE_O_TRACESYSGOOD);
+
+  send_continue = true;
 }
 
-bool Manager::to_next_event() {
+int Manager::to_next_event() {
   int status;
 
+  int counter = 0;
   while (1) {
-    ptrace(PTRACE_CONT, child, 0, 0);
-    waitpid(child, &status, 0);
-    // printf("[waitpid status: 0x%08x]\n", status);
-    if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_SECCOMP << 8))) {
-      // check if it's one of the syscalls we want to handle
-      int my_syscall =
-          ptrace(PTRACE_PEEKUSER, child, sizeof(long) * ORIG_RAX, 0);
-      switch (my_syscall) {
-      case SYS_openat:
-        handle_open(true);
-        continue;
-      case SYS_open:
-        handle_open(false);
-        continue;
-      case SYS_stat:
-        handle_stat();
-        continue;
-      case SYS_mknod:
-        handle_mknod();
-        continue;
-      case SYS_fdatasync:
-      case SYS_fsync:
-        handle_fsync();
-        continue;
-
-      case SYS_socket:
-        handle_socket();
-        continue;
-      case SYS_bind:
-        handle_bind();
-        continue;
-      case SYS_getsockname:
-        handle_getsockname();
-        continue;
-      // case SYS_connect:
-      //   handle_connect();
-      //   continue;
-      // case SYS_accept:
-      // case SYS_accept4:
-      //   handle_accept();
-      //   continue;
-      // case SYS_sendto:
-      //   handle_send();
-      //   continue;
-      // case SYS_recvfrom:
-      //   handle_recv();
-      //   continue;
-      // case SYS_read:
-      //   handle_read();
-      //   continue;
-      default:
-        // printf("ignored syscall: %d\n", my_syscall);
-        continue;
-      }
+    if (counter > 5) {
+      return send_continue ? -1 : 1;
     }
-    if (WIFEXITED(status)) {
-      printf("exited\n");
-      return false;
+    if (send_continue) {
+      ptrace(PTRACE_CONT, child, 0, 0);
+      send_continue = false;
+    }
+    // TODO - figure out how to do this so we don't get stuck waiting for an
+    // epoll_wait or something else blocking
+    waitpid(child, &status, WNOHANG);
+    counter++;
+    if (WIFSTOPPED(status)) {
+      send_continue = true;
+      if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_SECCOMP << 8))) {
+        // check if it's one of the syscalls we want to handle
+        int my_syscall =
+            ptrace(PTRACE_PEEKUSER, child, sizeof(long) * ORIG_RAX, 0);
+        switch (my_syscall) {
+        case SYS_openat:
+          handle_open(true);
+          continue;
+        case SYS_open:
+          handle_open(false);
+          continue;
+        case SYS_stat:
+          handle_stat();
+          continue;
+        case SYS_mknod:
+          handle_mknod();
+          continue;
+        case SYS_fdatasync:
+        case SYS_fsync:
+          handle_fsync();
+          continue;
+
+        case SYS_socket:
+          handle_socket();
+          continue;
+        case SYS_bind:
+          handle_bind();
+          continue;
+        case SYS_getsockname:
+          handle_getsockname();
+          continue;
+        // case SYS_connect:
+        //   handle_connect();
+        //   continue;
+        // case SYS_accept:
+        // case SYS_accept4:
+        //   handle_accept();
+        //   continue;
+        case SYS_sendto:
+          // handle_send();
+          printf("handling sendto\n");
+          continue;
+        // case SYS_recvfrom:
+        //   handle_recv();
+        //   continue;
+        // case SYS_read:
+        //   handle_read();
+        //   continue;
+        default:
+          // printf("ignored syscall: %d\n", my_syscall);
+          continue;
+        }
+      }
+      if (WIFEXITED(status)) {
+        printf("exited\n");
+        return 0;
+      }
     }
   }
 }

@@ -12,18 +12,28 @@ namespace Filter {
 
 const uint32_t syscalls_intercept[] = {
     // filesystem-related
-    SYS_open, SYS_openat, SYS_fsync, SYS_fdatasync, SYS_read, SYS_write,
-    SYS_stat, SYS_mknod,
+    SYS_open,
+    SYS_openat,
+    SYS_fsync,
+    SYS_fdatasync,
+    SYS_stat,
+    SYS_mknod,
     // network-related
-    SYS_socket, SYS_bind, SYS_getsockname, SYS_accept4, SYS_accept, SYS_connect,
-    SYS_sendto, SYS_sendmsg, SYS_sendmmsg, SYS_recvfrom, SYS_recvmsg,
-    SYS_recvmmsg};
+    SYS_socket,
+    SYS_bind,
+    SYS_getsockname,
+    SYS_getpeername,
+    SYS_sendto,
+    SYS_recvfrom,
+};
 
 class Manager {
 public:
   Manager(pid_t pid, sockaddr_in old_addr, sockaddr_in new_addr);
 
-  bool to_next_event();
+  int to_next_event();
+
+  void sync_fs();
 
   void sync_file(int fd);
 
@@ -31,6 +41,7 @@ public:
 
 private:
   pid_t child;
+  bool send_continue;
   sockaddr_in old_addr, new_addr;
 
   std::unordered_map<int, std::string> fds;
