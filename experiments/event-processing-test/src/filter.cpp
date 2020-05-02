@@ -21,6 +21,9 @@
 #include <syscall.h>
 #include <unistd.h>
 
+#include <string>
+#include <vector>
+
 #include "filter.h"
 
 namespace {
@@ -125,9 +128,72 @@ void _write_to_proc(pid_t child, char *to_write, char *addr, size_t len) {
 
 namespace Filter {
 
-Manager::Manager(pid_t pid, sockaddr_in old_addr, sockaddr_in new_addr)
-    : child{pid}, old_addr(old_addr), new_addr(new_addr), fds(), sockfds() {
-  printf("creating\n");
+Manager::Manager(std::vector<std::string> command, sockaddr_in old_addr,
+                 sockaddr_in new_addr)
+    : command(command), old_addr(old_addr), new_addr(new_addr), fds(),
+      sockfds() {
+  printf("[FILTER] creating with command: %s %s\n", command[0].c_str(),
+         command[1].c_str());
+
+  start_node();
+}
+
+void Manager::toggle_node() {
+  if (child > 0) {
+    stop_node();
+  } else {
+    start_node();
+  }
+}
+
+void Manager::start_node() {
+  pid_t pid;
+  if ((pid = fork()) == 0) {
+    /* If open syscall, trace */
+    // int devNull = open("/dev/null", O_WRONLY);
+    // dup2(devNull, STDOUT_FILENO);
+
+    int n_syscalls =
+        (sizeof(syscalls_intercept) / sizeof(syscalls_intercept[0]));
+    int filter_len = n_syscalls + 3;
+
+    struct sock_filter filter[filter_len];
+    filter[0] =
+        BPF_STMT(BPF_LD + BPF_W + BPF_ABS, offsetof(struct seccomp_data, nr));
+    filter[filter_len - 2] = BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_ALLOW);
+    filter[filter_len - 1] = BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_TRACE);
+
+    for (int i = 0; i < n_syscalls; i++) {
+      filter[i + 1] = BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, syscalls_intercept[i],
+                               u_int8_t(n_syscalls - i), 0);
+    }
+
+    struct sock_fprog prog = {
+        (unsigned short)(sizeof(filter) / sizeof(filter[0])),
+        filter,
+    };
+    ptrace(PTRACE_TRACEME, 0, 0, 0);
+    /* To avoid the need for CAP_SYS_ADMIN */
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1) {
+      perror("prctl(PR_SET_NO_NEW_PRIVS)");
+      exit(1);
+    }
+    if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) == -1) {
+      perror("when setting seccomp filter");
+      exit(1);
+    }
+    kill(getpid(), SIGSTOP);
+    const char **args = new const char *[command.size() + 2];
+    for (size_t i = 0; i < command.size(); i++) {
+      args[i] = command[i].c_str();
+    }
+    args[command.size()] = NULL;
+    printf("Executing %d with %s\n", getpid(), args[1]);
+    exit(execv(args[0], (char **)args));
+  }
+
+  child = pid;
+
   int status;
   waitpid(pid, &status, 0);
   ptrace(PTRACE_SETOPTIONS, pid, 0,
@@ -136,13 +202,27 @@ Manager::Manager(pid_t pid, sockaddr_in old_addr, sockaddr_in new_addr)
   send_continue = true;
 }
 
-int Manager::to_next_event() {
+void Manager::stop_node() {
+  kill(child, SIGKILL);
   int status;
+  while (waitpid(child, &status, 0) != child)
+    ;
+  child = -1;
+  send_continue = false;
 
+  fds.clear();
+  sockfds.clear();
+}
+
+Event Manager::to_next_event() {
+  if (child < 0)
+    return EV_DEAD;
+
+  int status;
   int counter = 0;
   while (1) {
     if (counter > 2) {
-      return send_continue ? -1 : 1;
+      return send_continue ? EV_NONE : EV_RUNNING;
     }
     if (send_continue) {
       ptrace(PTRACE_CONT, child, 0, 0);
@@ -199,7 +279,7 @@ int Manager::to_next_event() {
         case SYS_sendto:
           // handle_send();
           printf("handling sendto\n");
-          continue;
+          return EV_SENDTO;
         // case SYS_recvfrom:
         //   handle_recv();
         //   continue;
@@ -213,8 +293,8 @@ int Manager::to_next_event() {
         send_continue = true;
       }
       if (WIFEXITED(status)) {
-        printf("exited\n");
-        return 0;
+        printf("[FILTER] exited\n");
+        return EV_EXIT;
       }
     }
   }

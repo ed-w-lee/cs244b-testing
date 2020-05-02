@@ -37,23 +37,22 @@ void _set_reuseaddr(int fd) {
 Proxy::Proxy(sockaddr_in my_addr, sockaddr_in node_addr,
              std::vector<sockaddr_in> actual_node_map,
              std::vector<sockaddr_in> proxy_node_map)
-    : node_addr(node_addr), actual_node_map(actual_node_map),
-      proxy_node_map(proxy_node_map.begin(), proxy_node_map.end()),
-      related_fd(), waiting_msgs() {
+    : node_alive(true), node_addr(node_addr), actual_node_map(actual_node_map),
+      proxy_node_map(proxy_node_map.begin(), proxy_node_map.end()) {
   printf("initialize\n");
 
   efd = epoll_create1(EPOLL_CLOEXEC);
 
   sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
   if (bind(sockfd, (const sockaddr *)&my_addr, sizeof(sockaddr_in)) < 0) {
-    fprintf(stderr, "bind failed: %s\n", strerror(errno));
+    fprintf(stderr, "[PROXY] bind failed: %s\n", strerror(errno));
     exit(1);
   }
 
   _set_nonblocking(sockfd);
   _set_reuseaddr(sockfd);
   if (listen(sockfd, 100) < 0) {
-    fprintf(stderr, "listen failed: %s\n", strerror(errno));
+    fprintf(stderr, "[PROXY] listen failed: %s\n", strerror(errno));
   }
 
   // // we don't care about the port for when we're connecting as a proxy node
@@ -62,6 +61,23 @@ Proxy::Proxy(sockaddr_in my_addr, sockaddr_in node_addr,
   // }
 
   register_fd(sockfd);
+}
+
+void Proxy::toggle_node() {
+  if (node_alive) {
+    stop_node();
+  } else {
+    node_alive = true;
+  }
+}
+
+void Proxy::stop_node() {
+  std::unordered_set<int> tmpfds(inbound_fds.begin(), inbound_fds.end());
+  for (int fd : tmpfds) {
+    waiting_msgs.erase(fd);
+    unregister_fd(fd);
+  }
+  node_alive = false;
 }
 
 const std::unordered_map<int, std::queue<std::vector<char>>> &
@@ -82,7 +98,7 @@ void Proxy::allow_next_msg(int fd) {
     size_t msg_len = mesg.size();
     // TODO - think about partial sends
     if (sendto(got->first, &mesg[0], msg_len, 0, nullptr, 0) < (int)msg_len) {
-      fprintf(stderr, "couldn't send everything at once\n");
+      fprintf(stderr, "[PROXY] couldn't send everything at once\n");
       exit(1);
     }
     if (got->second.empty() && related_fd[fd] < 0) {
@@ -97,7 +113,7 @@ void Proxy::register_fd(int fd) {
   ev.events = EPOLLIN | EPOLLRDHUP;
   ev.data.u32 = fd;
   if (epoll_ctl(efd, EPOLL_CTL_ADD, fd, &ev) < 0) {
-    fprintf(stderr, "epoll_ctl_add failed: %s\n", strerror(errno));
+    fprintf(stderr, "[PROXY] epoll_ctl_add failed: %s\n", strerror(errno));
   }
 }
 
@@ -111,6 +127,12 @@ void Proxy::unregister_fd(int fd) {
   printf("unregistering %d\n", fd);
   epoll_ctl(efd, EPOLL_CTL_DEL, fd, nullptr);
   close(fd);
+  if (inbound_fds.find(fd) != inbound_fds.end()) {
+    inbound_fds.erase(fd);
+  }
+  if (fd_to_node.find(fd) != fd_to_node.end()) {
+    fd_to_node.erase(fd);
+  }
   // unlink related fds
   printf("relatedfd[%d]=%d\n", fd, related_fd[fd]);
   if (related_fd[fd] >= 0) {
@@ -142,8 +164,12 @@ void Proxy::poll_for_events() {
           fromfd =
               accept4(sockfd, (struct sockaddr *)&new_conn, &len, SOCK_CLOEXEC);
           if (fromfd < 0) {
-            fprintf(stderr, "accept failed: %s\n", strerror(errno));
+            fprintf(stderr, "[PROXY] accept failed: %s\n", strerror(errno));
             exit(1);
+          }
+          if (!node_alive) {
+            close(fromfd);
+            continue;
           }
           printf("[PROXY] accepted connection from: %s:%d\n",
                  inet_ntoa(new_conn.sin_addr), ntohs(new_conn.sin_port));
@@ -175,19 +201,23 @@ void Proxy::poll_for_events() {
             printf("binding to proxy_node_map[%d]: %s:%d\n", idx,
                    inet_ntoa(x.sin_addr), ntohs(x.sin_port));
             if (bind(peerfd, (const sockaddr *)&x, sizeof(sockaddr_in)) < 0) {
-              fprintf(stderr, "bind failed: %s\n", strerror(errno));
+              fprintf(stderr, "[PROXY] bind failed: %s\n", strerror(errno));
               exit(1);
             }
           }
           if (connect(peerfd, (const sockaddr *)&node_addr,
                       sizeof(sockaddr_in)) < 0) {
-            fprintf(stderr, "connect failed: %s\n", strerror(errno));
-            exit(1);
+            fprintf(stderr, "[PROXY] connect to %s failed: %s\n",
+                    inet_ntoa(node_addr.sin_addr), strerror(errno));
+            close(peerfd);
+            close(fromfd);
+            continue;
           }
           _set_nonblocking(peerfd);
           _set_reuseaddr(peerfd);
           register_fd(peerfd);
           waiting_msgs[peerfd] = std::queue<std::vector<char>>();
+          inbound_fds.insert(peerfd);
         }
 
         link_fds(peerfd, fromfd);

@@ -22,6 +22,8 @@
 #include <syscall.h>
 #include <unistd.h>
 
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 #include "filter.h"
@@ -30,8 +32,6 @@
 using namespace Filter;
 
 int main(int argc, char **argv) {
-  pid_t pid;
-
   if (argc < 2) {
     fprintf(stderr, "Usage: %s <prog> <arg1> ... <argN>\n", argv[0]);
     return 1;
@@ -57,52 +57,12 @@ int main(int argc, char **argv) {
   newaddrs[2].sin_addr.s_addr = inet_addr("127.0.0.30");
 
   std::vector<Manager> managers;
-
   for (int i = 0; i < NUM_NODES; i++) {
-    if ((pid = fork()) == 0) {
-      /* If open syscall, trace */
-      int devNull = open("/dev/null", O_WRONLY);
-      // dup2(devNull, STDOUT_FILENO);
+    std::vector<std::string> command;
+    command.push_back(std::string(argv[1]));
+    command.push_back(std::to_string(i));
 
-      int n_syscalls =
-          (sizeof(syscalls_intercept) / sizeof(syscalls_intercept[0]));
-      int filter_len = n_syscalls + 3;
-
-      struct sock_filter filter[filter_len];
-      filter[0] =
-          BPF_STMT(BPF_LD + BPF_W + BPF_ABS, offsetof(struct seccomp_data, nr));
-      filter[filter_len - 2] = BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_ALLOW);
-      filter[filter_len - 1] = BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_TRACE);
-
-      for (int i = 0; i < n_syscalls; i++) {
-        filter[i + 1] =
-            BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, syscalls_intercept[i],
-                     u_int8_t(n_syscalls - i), 0);
-      }
-
-      struct sock_fprog prog = {
-          (unsigned short)(sizeof(filter) / sizeof(filter[0])),
-          filter,
-      };
-      ptrace(PTRACE_TRACEME, 0, 0, 0);
-      /* To avoid the need for CAP_SYS_ADMIN */
-      if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == -1) {
-        perror("prctl(PR_SET_NO_NEW_PRIVS)");
-        return 1;
-      }
-      if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) == -1) {
-        perror("when setting seccomp filter");
-        return 1;
-      }
-      kill(getpid(), SIGSTOP);
-      char buf[10];
-      snprintf(buf, 9, "%d", i);
-      buf[9] = 0;
-      printf("Executing %d with %s\n", getpid(), buf);
-      return execl(argv[1], buf);
-    }
-    Manager manager(pid, oldaddrs[i], newaddrs[i]);
-    managers.push_back(manager);
+    managers.push_back(Filter::Manager(command, oldaddrs[i], newaddrs[i]));
   }
 
   std::vector<sockaddr_in> newaddrs_vec;
@@ -127,8 +87,29 @@ int main(int argc, char **argv) {
         }
       }
     }
-    for (auto &manager : managers) {
-      manager.to_next_event();
+    for (int i = 0; i < NUM_NODES; i++) {
+      auto &manager = managers[i];
+      switch (manager.to_next_event()) {
+      case Filter::EV_SENDTO:
+      case Filter::EV_SYNCFS:
+        if (rand() % 10 == 0) {
+          printf("[ORCH] Toggled node - %d\n", i);
+          manager.toggle_node();
+          proxies[i].toggle_node();
+        }
+        continue;
+      case Filter::EV_DEAD:
+        if (rand() % 2 == 0) {
+          printf("[ORCH] Toggled node - %d\n", i);
+          manager.toggle_node();
+          proxies[i].toggle_node();
+        }
+        continue;
+      case Filter::EV_RUNNING:
+      case Filter::EV_EXIT:
+      case Filter::EV_NONE:
+        continue;
+      }
     }
   }
 }

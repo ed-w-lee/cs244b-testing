@@ -9,6 +9,7 @@
 #include <queue>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 // This ensures requests going to the proxy's address go to the node's address.
 // The proxy will be the one establishing connections to the node on behalf of
@@ -21,6 +22,8 @@ public:
         std::vector<sockaddr_in> actual_node_map,
         std::vector<sockaddr_in> proxy_node_map);
 
+  void toggle_node();
+
   // retrieves all messages intended for the node
   // (node idx or client) -> queue of messages
   const std::unordered_map<int, std::queue<std::vector<char>>> &get_msgs();
@@ -29,18 +32,22 @@ public:
   void allow_next_msg(int fd);
 
 private:
+  bool node_alive;
   const int CLIENT_OFFS = 1000;
 
   int efd, sockfd;
   sockaddr_in node_addr;
   std::vector<sockaddr_in> actual_node_map;
   std::vector<sockaddr_in> proxy_node_map;
-  std::unordered_map<int, int> fd_to_node;
 
+  std::unordered_set<int> inbound_fds;
+  std::unordered_map<int, int> fd_to_node;
   std::unordered_map<int, int> related_fd;
 
   // waiting_key -> queue of messages
   std::unordered_map<int, std::queue<std::vector<char>>> waiting_msgs;
+
+  void stop_node();
 
   void register_fd(int fd);
   void unregister_fd(int fd);

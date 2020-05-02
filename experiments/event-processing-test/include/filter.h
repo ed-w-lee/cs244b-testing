@@ -27,11 +27,21 @@ const uint32_t syscalls_intercept[] = {
     SYS_recvfrom,
 };
 
+enum Event {
+  EV_NONE,
+  EV_RUNNING,
+  EV_EXIT,
+  EV_DEAD,
+  EV_SENDTO,
+  EV_SYNCFS,
+};
+
 class Manager {
 public:
-  Manager(pid_t pid, sockaddr_in old_addr, sockaddr_in new_addr);
+  Manager(std::vector<std::string> command, sockaddr_in old_addr,
+          sockaddr_in new_addr);
 
-  int to_next_event();
+  Event to_next_event();
 
   void sync_fs();
 
@@ -39,7 +49,10 @@ public:
 
   void receive_msg(int sockfd);
 
+  void toggle_node();
+
 private:
+  std::vector<std::string> command;
   pid_t child;
   bool send_continue;
   sockaddr_in old_addr, new_addr;
@@ -49,6 +62,9 @@ private:
 
   const char *suffix = ".__bk";
   const char *prefix = "/tmp/our_cs244b_test_13245646/";
+
+  void start_node();
+  void stop_node();
 
   void handle_open(bool at);
   void handle_stat();
