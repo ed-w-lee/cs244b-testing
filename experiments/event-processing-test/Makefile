@@ -7,7 +7,7 @@ HDR_DIR = include
 
 CXXFLAGS += -g -Wall -Wextra -DDEBUG -std=c++14 -I$(HDR_DIR)
 
-all: orch install
+all: orch
 
 install:
 	cp -r $(FILE_DIR) /tmp

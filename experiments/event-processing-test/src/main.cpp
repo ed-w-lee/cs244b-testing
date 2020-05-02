@@ -37,32 +37,32 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  const int NUM_NODES = 1;
+  const int NUM_NODES = 3;
   sockaddr_in oldaddrs[NUM_NODES];
   for (int i = 0; i < NUM_NODES; i++) {
     oldaddrs[i].sin_family = AF_INET;
     oldaddrs[i].sin_port = htons(4242);
   }
   oldaddrs[0].sin_addr.s_addr = inet_addr("127.0.0.11");
-  // oldaddrs[1].sin_addr.s_addr = inet_addr("127.0.0.21");
-  // oldaddrs[2].sin_addr.s_addr = inet_addr("127.0.0.31");
+  oldaddrs[1].sin_addr.s_addr = inet_addr("127.0.0.21");
+  oldaddrs[2].sin_addr.s_addr = inet_addr("127.0.0.31");
 
   sockaddr_in newaddrs[NUM_NODES];
   for (int i = 0; i < NUM_NODES; i++) {
     newaddrs[i].sin_family = AF_INET;
-    newaddrs[i].sin_addr.s_addr = inet_addr("127.0.0.1");
+    newaddrs[i].sin_port = htons(4242);
   }
-  newaddrs[0].sin_port = htons(3001);
-  // newaddrs[1].sin_port = htons(3002);
-  // newaddrs[2].sin_port = htons(3003);
+  newaddrs[0].sin_addr.s_addr = inet_addr("127.0.0.10");
+  newaddrs[1].sin_addr.s_addr = inet_addr("127.0.0.20");
+  newaddrs[2].sin_addr.s_addr = inet_addr("127.0.0.30");
 
   std::vector<Manager> managers;
 
   for (int i = 0; i < NUM_NODES; i++) {
     if ((pid = fork()) == 0) {
       /* If open syscall, trace */
-      // close(1);
-      // close(2);
+      int devNull = open("/dev/null", O_WRONLY);
+      // dup2(devNull, STDOUT_FILENO);
 
       int n_syscalls =
           (sizeof(syscalls_intercept) / sizeof(syscalls_intercept[0]));
@@ -95,25 +95,37 @@ int main(int argc, char **argv) {
         return 1;
       }
       kill(getpid(), SIGSTOP);
-      return execvp(argv[1], argv + 1);
+      char buf[10];
+      snprintf(buf, 9, "%d", i);
+      buf[9] = 0;
+      printf("Executing %d with %s\n", getpid(), buf);
+      return execl(argv[1], buf);
     }
     Manager manager(pid, oldaddrs[i], newaddrs[i]);
     managers.push_back(manager);
   }
 
   std::vector<sockaddr_in> newaddrs_vec;
+  std::vector<sockaddr_in> oldaddrs_vec;
   for (int i = 0; i < NUM_NODES; i++) {
     newaddrs_vec.push_back(newaddrs[i]);
+    oldaddrs_vec.push_back(oldaddrs[i]);
   }
+
   std::vector<Proxy> proxies;
   for (int i = 0; i < NUM_NODES; i++) {
-    Proxy proxy(oldaddrs[i], newaddrs[i], newaddrs_vec);
+    Proxy proxy(oldaddrs[i], newaddrs[i], newaddrs_vec, oldaddrs_vec);
     proxies.push_back(proxy);
   }
 
   while (true) {
-    for (auto proxy : proxies) {
-      proxy.get_msgs();
+    for (auto &proxy : proxies) {
+      auto &q = proxy.get_msgs();
+      for (auto &x : q) {
+        if (x.second.size() > 0) {
+          proxy.allow_next_msg(x.first);
+        }
+      }
     }
     for (auto &manager : managers) {
       manager.to_next_event();

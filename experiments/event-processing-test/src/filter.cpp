@@ -141,7 +141,7 @@ int Manager::to_next_event() {
 
   int counter = 0;
   while (1) {
-    if (counter > 5) {
+    if (counter > 2) {
       return send_continue ? -1 : 1;
     }
     if (send_continue) {
@@ -153,11 +153,15 @@ int Manager::to_next_event() {
     waitpid(child, &status, WNOHANG);
     counter++;
     if (WIFSTOPPED(status)) {
-      send_continue = true;
       if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_SECCOMP << 8))) {
         // check if it's one of the syscalls we want to handle
         int my_syscall =
             ptrace(PTRACE_PEEKUSER, child, sizeof(long) * ORIG_RAX, 0);
+        if (my_syscall > 0) {
+          // If attempting to read the data failed, that may be because
+          // program's still running
+          send_continue = true;
+        }
         switch (my_syscall) {
         case SYS_openat:
           handle_open(true);
@@ -203,9 +207,10 @@ int Manager::to_next_event() {
         //   handle_read();
         //   continue;
         default:
-          // printf("ignored syscall: %d\n", my_syscall);
           continue;
         }
+      } else {
+        send_continue = true;
       }
       if (WIFEXITED(status)) {
         printf("exited\n");
@@ -333,9 +338,9 @@ void Manager::handle_socket() {
   ptrace(PTRACE_GETREGS, child, 0, &regs);
   int domain = regs.rdi;
   int type = regs.rsi;
-  int protocol = regs.rdx;
+  // int protocol = regs.rdx;
 
-  printf("domain: %d, type: %d, protocol: %d\n", domain, type, protocol);
+  // printf("domain: %d, type: %d, protocol: %d\n", domain, type, protocol);
 
   if (domain == AF_INET && type & SOCK_STREAM) {
     // when TCP, track the socket being returned
@@ -352,7 +357,7 @@ void Manager::handle_socket() {
 }
 
 void Manager::handle_bind() {
-  printf("handling bind\n");
+  printf("[FILTER] handling bind\n");
 
   struct user_regs_struct regs;
   ptrace(PTRACE_GETREGS, child, 0, &regs);
@@ -361,25 +366,42 @@ void Manager::handle_bind() {
   size_t addrlen = regs.rdx;
 
   sockaddr_in curr_addr;
-  printf("attempt to read from proc\n");
   _read_from_proc(child, (char *)&curr_addr, (char *)sockaddr_ptr, addrlen);
 
-  printf("sockfd: %d oldaddr: %d %d %s\n", sockfd, curr_addr.sin_family,
-         ntohs(curr_addr.sin_port), inet_ntoa(curr_addr.sin_addr));
+  printf("[FILTER] sockfd: %d oldaddr: %d %s:%d\n", sockfd,
+         curr_addr.sin_family, inet_ntoa(curr_addr.sin_addr),
+         ntohs(curr_addr.sin_port));
 
-  if (curr_addr.sin_port == old_addr.sin_port &&
-      strcmp(inet_ntoa(curr_addr.sin_addr), inet_ntoa(old_addr.sin_addr)) ==
-          0) {
+  if (curr_addr.sin_family == AF_INET &&
+      curr_addr.sin_addr.s_addr == old_addr.sin_addr.s_addr) {
     // overwrite the address, in the same location
     // NOTE - we're assuming that they're the same width
-    printf("%lu\n", addrlen);
-    _write_to_proc(child, (char *)&new_addr, (char *)sockaddr_ptr, addrlen);
+    sockaddr_in my_new_addr;
+    my_new_addr.sin_addr.s_addr = new_addr.sin_addr.s_addr;
+    my_new_addr.sin_port = curr_addr.sin_port;
+    my_new_addr.sin_family = AF_INET;
+    printf("[FILTER] writing my_new_addr %s:%d to proc for %d\n",
+           inet_ntoa(my_new_addr.sin_addr), ntohs(my_new_addr.sin_port),
+           sockfd);
+    _write_to_proc(child, (char *)&my_new_addr, (char *)sockaddr_ptr,
+                   sizeof(sockaddr_in));
     sockfds[sockfd] = true;
+
+    // overwrite the arguments back after the syscall
+    int status;
+    ptrace(PTRACE_SYSCALL, child, 0, 0);
+    waitpid(child, &status, 0);
+    if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+      printf("[FILTER] overwriting %s:%d to proc\n",
+             inet_ntoa(curr_addr.sin_addr), ntohs(curr_addr.sin_port));
+      _write_to_proc(child, (char *)&curr_addr, (char *)sockaddr_ptr,
+                     sizeof(sockaddr_in));
+    }
   }
 }
 
 void Manager::handle_getsockname() {
-  printf("handling getsockname\n");
+  printf("[FILTER] handling getsockname\n");
   struct user_regs_struct regs;
   ptrace(PTRACE_GETREGS, child, 0, &regs);
   int sockfd = regs.rdi;
@@ -389,20 +411,33 @@ void Manager::handle_getsockname() {
   auto got = sockfds.find(sockfd);
   if (got == sockfds.end() || !got->second) {
     // not redirected, just ignore
+    printf("[FILTER] sockfd %d not redirectd, ignore\n", sockfd);
     return;
   }
 
-  printf("undoing redirect\n");
   long addrlen_lng;
   _read_from_proc(child, (char *)&addrlen_lng, (char *)addrlen_ptr,
                   sizeof(long));
-  long addrlen = (int)addrlen_lng;
+  size_t addrlen = (size_t)addrlen_lng;
+  if (addrlen < sizeof(sockaddr_in)) {
+    fprintf(stderr, "Found addrlen that's smaller than expected.");
+    exit(1);
+  }
 
   int status;
   ptrace(PTRACE_SYSCALL, child, 0, 0);
   waitpid(child, &status, 0);
   if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
-    _write_to_proc(child, (char *)&old_addr, (char *)sockaddr_ptr, addrlen);
+    printf("[FILTER] length of overwrite: %ld\n", addrlen);
+    sockaddr_in addr_to_overwrite;
+    _read_from_proc(child, (char *)&addr_to_overwrite, (char *)sockaddr_ptr,
+                    sizeof(sockaddr_in));
+    addr_to_overwrite.sin_addr.s_addr = old_addr.sin_addr.s_addr;
+    printf("[FILTER] overwriting %s:%d to proc\n",
+           inet_ntoa(addr_to_overwrite.sin_addr),
+           ntohs(addr_to_overwrite.sin_port));
+    _write_to_proc(child, (char *)&addr_to_overwrite, (char *)sockaddr_ptr,
+                   sizeof(sockaddr_in));
   }
 }
 

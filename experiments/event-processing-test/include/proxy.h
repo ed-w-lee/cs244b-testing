@@ -18,25 +18,33 @@
 class Proxy {
 public:
   Proxy(sockaddr_in my_addr, sockaddr_in node_addr,
-        std::vector<sockaddr_in> node_map);
+        std::vector<sockaddr_in> actual_node_map,
+        std::vector<sockaddr_in> proxy_node_map);
 
   // retrieves all messages intended for the node
   // (node idx or client) -> queue of messages
-  const std::unordered_map<int, std::queue<std::string>> &get_msgs();
+  const std::unordered_map<int, std::queue<std::vector<char>>> &get_msgs();
 
   // TCP semantics, so node<->node should be in order
-  void allow_next_msg(int node_idx);
+  void allow_next_msg(int fd);
 
 private:
   const int CLIENT_OFFS = 1000;
 
   int efd, sockfd;
   sockaddr_in node_addr;
-  std::vector<sockaddr_in> node_map;
+  std::vector<sockaddr_in> actual_node_map;
+  std::vector<sockaddr_in> proxy_node_map;
   std::unordered_map<int, int> fd_to_node;
 
-  // (node idx or client) -> queue of messages
-  std::unordered_map<int, std::queue<std::string>> waiting_msgs;
+  std::unordered_map<int, int> related_fd;
+
+  // waiting_key -> queue of messages
+  std::unordered_map<int, std::queue<std::vector<char>>> waiting_msgs;
+
+  void register_fd(int fd);
+  void unregister_fd(int fd);
+  void link_fds(int fd1, int fd2);
 
   void poll_for_events();
 };
