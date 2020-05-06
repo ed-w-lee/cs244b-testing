@@ -129,9 +129,9 @@ void _write_to_proc(pid_t child, char *to_write, char *addr, size_t len) {
 namespace Filter {
 
 Manager::Manager(std::vector<std::string> command, sockaddr_in old_addr,
-                 sockaddr_in new_addr)
-    : command(command), old_addr(old_addr), new_addr(new_addr), fds(),
-      sockfds() {
+                 sockaddr_in new_addr, bool ignore_stdout)
+    : command(command), ignore_stdout(ignore_stdout), old_addr(old_addr),
+      new_addr(new_addr), fds(), sockfds() {
   printf("[FILTER] creating with command: %s %s\n", command[0].c_str(),
          command[1].c_str());
 
@@ -150,8 +150,10 @@ void Manager::start_node() {
   pid_t pid;
   if ((pid = fork()) == 0) {
     /* If open syscall, trace */
-    // int devNull = open("/dev/null", O_WRONLY);
-    // dup2(devNull, STDOUT_FILENO);
+    if (ignore_stdout) {
+      int devNull = open("/dev/null", O_WRONLY);
+      dup2(devNull, STDOUT_FILENO);
+    }
 
     int n_syscalls =
         (sizeof(syscalls_intercept) / sizeof(syscalls_intercept[0]));
@@ -199,7 +201,7 @@ void Manager::start_node() {
   ptrace(PTRACE_SETOPTIONS, pid, 0,
          PTRACE_O_TRACESECCOMP | PTRACE_O_TRACESYSGOOD);
 
-  send_continue = true;
+  child_state = ST_STOPPED;
 }
 
 void Manager::stop_node() {
@@ -208,30 +210,31 @@ void Manager::stop_node() {
   while (waitpid(child, &status, 0) != child)
     ;
   child = -1;
-  send_continue = false;
+  child_state = ST_DEAD;
 
   fds.clear();
   sockfds.clear();
 }
 
 Event Manager::to_next_event() {
-  if (child < 0)
+  if (child_state == ST_DEAD)
     return EV_DEAD;
 
   int status;
-  int counter = 0;
   while (1) {
-    if (counter > 2) {
-      return send_continue ? EV_NONE : EV_RUNNING;
-    }
-    if (send_continue) {
+    if (child_state == ST_STOPPED) {
+      // printf("[FILTER] Sending continue to restart\n");
       ptrace(PTRACE_CONT, child, 0, 0);
-      send_continue = false;
+      child_state = ST_RUNNING;
     }
     // TODO - figure out how to do this so we don't get stuck waiting for an
     // epoll_wait or something else blocking
-    waitpid(child, &status, WNOHANG);
-    counter++;
+    if (waitpid(child, &status, WNOHANG) == 0) {
+      if (child_state == ST_POLLING) {
+        return EV_POLLING;
+      }
+      continue;
+    }
     if (WIFSTOPPED(status)) {
       if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_SECCOMP << 8))) {
         // check if it's one of the syscalls we want to handle
@@ -240,9 +243,18 @@ Event Manager::to_next_event() {
         if (my_syscall > 0) {
           // If attempting to read the data failed, that may be because
           // program's still running
-          send_continue = true;
+          child_state = ST_STOPPED;
         }
         switch (my_syscall) {
+          // polling-related
+        case SYS_poll:
+        case SYS_select:
+          // printf("[FILTER] Sending continue due to polling\n");
+          ptrace(PTRACE_CONT, child, 0, 0);
+          child_state = ST_POLLING;
+          return EV_POLLING;
+
+          // filesystem-related
         case SYS_openat:
           handle_open(true);
           continue;
@@ -260,6 +272,7 @@ Event Manager::to_next_event() {
           handle_fsync();
           continue;
 
+          // network-related
         case SYS_socket:
           handle_socket();
           continue;
@@ -269,33 +282,19 @@ Event Manager::to_next_event() {
         case SYS_getsockname:
           handle_getsockname();
           continue;
-        // case SYS_connect:
-        //   handle_connect();
-        //   continue;
-        // case SYS_accept:
-        // case SYS_accept4:
-        //   handle_accept();
-        //   continue;
         case SYS_sendto:
-          // handle_send();
-          printf("handling sendto\n");
+          printf("[FILTER] handling sendto\n");
           return EV_SENDTO;
-        // case SYS_recvfrom:
-        //   handle_recv();
-        //   continue;
-        // case SYS_read:
-        //   handle_read();
-        //   continue;
         default:
           continue;
         }
       } else {
-        send_continue = true;
+        child_state = ST_STOPPED;
       }
-      if (WIFEXITED(status)) {
-        printf("[FILTER] exited\n");
-        return EV_EXIT;
-      }
+    } else if (WIFEXITED(status)) {
+      printf("[FILTER] exited\n");
+      child_state = ST_DEAD;
+      return EV_EXIT;
     }
   }
 }

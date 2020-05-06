@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 #include <cstdlib>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,10 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Usage: %s <prog> <arg1> ... <argN>\n", argv[0]);
     return 1;
   }
+
+  std::string str_seed = "David Mazieres";
+  std::seed_seq seed(str_seed.begin(), str_seed.end());
+  std::mt19937 rng(seed);
 
   const int NUM_NODES = 3;
   sockaddr_in oldaddrs[NUM_NODES];
@@ -62,7 +67,8 @@ int main(int argc, char **argv) {
     command.push_back(std::string(argv[1]));
     command.push_back(std::to_string(i));
 
-    managers.push_back(Filter::Manager(command, oldaddrs[i], newaddrs[i]));
+    managers.push_back(
+        Filter::Manager(command, oldaddrs[i], newaddrs[i], false));
   }
 
   std::vector<sockaddr_in> newaddrs_vec;
@@ -91,24 +97,35 @@ int main(int argc, char **argv) {
       auto &manager = managers[i];
       switch (manager.to_next_event()) {
       case Filter::EV_SENDTO:
-      case Filter::EV_SYNCFS:
-        if (rand() % 10 == 0) {
+      case Filter::EV_SYNCFS: {
+        int x = rng();
+        printf("[ORCH] rng for %d: %d\n", i, x);
+        if (x % 10 == 0) {
           printf("[ORCH] Toggled node - %d\n", i);
           manager.toggle_node();
           proxies[i].toggle_node();
         }
         continue;
-      case Filter::EV_DEAD:
-        if (rand() % 2 == 0) {
+      }
+      case Filter::EV_DEAD: {
+        int x = rng();
+        printf("[ORCH] rng for %d: %d\n", i, x);
+        if (x % 2 == 0) {
           printf("[ORCH] Toggled node - %d\n", i);
           manager.toggle_node();
           proxies[i].toggle_node();
+          i--; // get node to start listening before anything else
         }
         continue;
-      case Filter::EV_RUNNING:
-      case Filter::EV_EXIT:
-      case Filter::EV_NONE:
+      }
+      case Filter::EV_POLLING: {
+        // printf("[ORCH] node %d is polling\n", i);
         continue;
+      }
+      case Filter::EV_EXIT: {
+        fprintf(stderr, "[ORCH] node %d exited unexpectedly.\n", i);
+        exit(1);
+      }
       }
     }
   }

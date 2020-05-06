@@ -11,6 +11,9 @@
 namespace Filter {
 
 const uint32_t syscalls_intercept[] = {
+    // polling-related
+    SYS_select,
+    SYS_poll,
     // filesystem-related
     SYS_open,
     SYS_openat,
@@ -28,18 +31,24 @@ const uint32_t syscalls_intercept[] = {
 };
 
 enum Event {
-  EV_NONE,
-  EV_RUNNING,
+  EV_POLLING,
   EV_EXIT,
   EV_DEAD,
   EV_SENDTO,
   EV_SYNCFS,
 };
 
+enum State {
+  ST_DEAD,
+  ST_POLLING,
+  ST_STOPPED,
+  ST_RUNNING,
+};
+
 class Manager {
 public:
   Manager(std::vector<std::string> command, sockaddr_in old_addr,
-          sockaddr_in new_addr);
+          sockaddr_in new_addr, bool ignore_stdout);
 
   Event to_next_event();
 
@@ -54,7 +63,8 @@ public:
 private:
   std::vector<std::string> command;
   pid_t child;
-  bool send_continue;
+  bool ignore_stdout;
+  State child_state;
   sockaddr_in old_addr, new_addr;
 
   std::unordered_map<int, std::string> fds;

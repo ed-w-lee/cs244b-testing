@@ -18,17 +18,17 @@ namespace {
 void _set_nonblocking(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
   if (flags < 0) {
-    fprintf(stderr, "fcntl failed: %s\n", strerror(errno));
+    fprintf(stderr, "[PROXY] fcntl failed: %s\n", strerror(errno));
   }
   if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-    fprintf(stderr, "fcntl failed: %s\n", strerror(errno));
+    fprintf(stderr, "[PROXY] fcntl failed: %s\n", strerror(errno));
   }
 }
 
 void _set_reuseaddr(int fd) {
   int enable = 1;
   if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
-    fprintf(stderr, "REUSEADDR failed: %s\n", strerror(errno));
+    fprintf(stderr, "[PROXY] REUSEADDR failed: %s\n", strerror(errno));
   }
 }
 
@@ -39,7 +39,7 @@ Proxy::Proxy(sockaddr_in my_addr, sockaddr_in node_addr,
              std::vector<sockaddr_in> proxy_node_map)
     : node_alive(true), node_addr(node_addr), actual_node_map(actual_node_map),
       proxy_node_map(proxy_node_map.begin(), proxy_node_map.end()) {
-  printf("initialize\n");
+  printf("[PROXY] initialize\n");
 
   efd = epoll_create1(EPOLL_CLOEXEC);
 
@@ -88,10 +88,10 @@ Proxy::get_msgs() {
 }
 
 void Proxy::allow_next_msg(int fd) {
-  printf("sending next message for fd: %d\n", fd);
+  printf("[PROXY] sending next message for fd: %d\n", fd);
   auto got = waiting_msgs.find(fd);
   if (got == waiting_msgs.end()) {
-    printf("no messages for fd: %d can be sent\n", fd);
+    printf("[PROXY] no messages for fd: %d can be sent\n", fd);
   } else {
     std::vector<char> mesg = got->second.front();
     got->second.pop();
@@ -108,7 +108,7 @@ void Proxy::allow_next_msg(int fd) {
 }
 
 void Proxy::register_fd(int fd) {
-  printf("registering %d\n", fd);
+  printf("[PROXY] registering %d\n", fd);
   struct epoll_event ev;
   ev.events = EPOLLIN | EPOLLRDHUP;
   ev.data.u32 = fd;
@@ -118,13 +118,13 @@ void Proxy::register_fd(int fd) {
 }
 
 void Proxy::link_fds(int fd1, int fd2) {
-  printf("linking %d and %d\n", fd1, fd2);
+  printf("[PROXY] linking %d and %d\n", fd1, fd2);
   related_fd[fd1] = fd2;
   related_fd[fd2] = fd1;
 }
 
 void Proxy::unregister_fd(int fd) {
-  printf("unregistering %d\n", fd);
+  printf("[PROXY] unregistering %d\n", fd);
   epoll_ctl(efd, EPOLL_CTL_DEL, fd, nullptr);
   close(fd);
   if (inbound_fds.find(fd) != inbound_fds.end()) {
@@ -134,7 +134,7 @@ void Proxy::unregister_fd(int fd) {
     fd_to_node.erase(fd);
   }
   // unlink related fds
-  printf("relatedfd[%d]=%d\n", fd, related_fd[fd]);
+  printf("[PROXY] relatedfd[%d]=%d\n", fd, related_fd[fd]);
   if (related_fd[fd] >= 0) {
     int other_fd = related_fd[fd];
     related_fd[other_fd] = -1;
@@ -198,7 +198,7 @@ void Proxy::poll_for_events() {
           if (found) {
             sockaddr_in x = proxy_node_map[idx];
             x.sin_port = htons(0);
-            printf("binding to proxy_node_map[%d]: %s:%d\n", idx,
+            printf("[PROXY] binding to proxy_node_map[%d]: %s:%d\n", idx,
                    inet_ntoa(x.sin_addr), ntohs(x.sin_port));
             if (bind(peerfd, (const sockaddr *)&x, sizeof(sockaddr_in)) < 0) {
               fprintf(stderr, "[PROXY] bind failed: %s\n", strerror(errno));
@@ -227,10 +227,10 @@ void Proxy::poll_for_events() {
         ssize_t n_bytes =
             recvfrom(conn_fd, &buf, MAX_BUF - 1, 0, nullptr, nullptr);
         if (n_bytes < 0) {
-          fprintf(stderr, "%s\n", strerror(errno));
-          exit(1);
-        }
-        if (n_bytes == 0) {
+          fprintf(stderr, "[PROXY] recv failed: %s\n", strerror(errno));
+          unregister_fd(conn_fd);
+          closed = true;
+        } else if (n_bytes == 0) {
           printf("[PROXY] nothing read, closing %d\n", conn_fd);
           // assume later than Linux 2.6.9
           unregister_fd(conn_fd);
@@ -241,12 +241,12 @@ void Proxy::poll_for_events() {
           printf("[PROXY] read: %s\n", buf);
 
           if (related_fd[conn_fd] >= 0) {
-            printf("adding to waiting_msgs\n");
+            printf("[PROXY] adding to waiting_msgs\n");
             waiting_msgs[related_fd[conn_fd]].push(mesg);
             printf("[PROXY] new queue len: %lu\n",
                    waiting_msgs[related_fd[conn_fd]].size());
           } else {
-            printf("no related fd, not adding to waiting msgs\n");
+            printf("[PROXY] no related fd, not adding to waiting msgs\n");
           }
         }
       }
