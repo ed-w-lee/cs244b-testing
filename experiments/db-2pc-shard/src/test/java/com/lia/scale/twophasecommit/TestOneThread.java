@@ -11,6 +11,7 @@ import org.springframework.http.ResponseEntity;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -19,8 +20,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 //@AutoConfigureMockMvc
 public class TestOneThread {
 
-//    @Autowired
-//    private Database dbNode1;
+    @Test
+    public void run2NodesAndCompare() throws Exception {
+
+        Database dbNode1 = new Database();
+        dbNode1.SERVER_MAX_FULLLRETRY = 100;
+        dbNode1.SERVER_RETRY = 5;
+
+        int startID = 0, endID = 100;
+        Map<String, String> localMemory = new HashMap<>();
+        String host = "localhost";
+        String com = "/2pc";
+        int port = 14001;
+
+        for (int i = startID; i < endID; i++){
+            localMemory.put("a",String.valueOf(i));
+            ResponseEntity res = dbNode1.putToUrl(host, port, com, map2json(localMemory), true);
+            assertThat(res.getStatusCode().value() == 200).isTrue();
+        }
+
+    }
 
     @Test
     public void happyPathVoteCommitApply() throws Exception {
@@ -254,7 +273,7 @@ public class TestOneThread {
 
     }
 
-    public String map2json(Map<String, String> input) throws Exception {
+    public static String map2json(Map<String, String> input) throws Exception {
         ObjectMapper objectMapper = new ObjectMapper();
         return objectMapper.writeValueAsString(input);
     }

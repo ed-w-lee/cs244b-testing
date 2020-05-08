@@ -1,4 +1,4 @@
 main:
   maxretry: 100
   maxfullretry: 1000
-  nodes: 14001,14002
+  nodes: 14001,14002,14003

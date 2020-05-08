@@ -14,8 +14,7 @@ public class HttpDataProxyTest {
     public void bucketFile() {
         //String fileToAnalyze = "C:\\johny\\tmp\\twopc\\node3_client30_request1000.log";
         //String fileToAnalyze = "C:\\johny\\tmp\\twopc\\node2_client20_request1000.log";
-        //String fileToAnalyze = "C:\\johny\\tmp\\twopc\\rand_node2_client20_request1000.log";
-        String fileToAnalyze = "C:\\johny\\tmp\\twopc\\visited_node2_client20_request1000.log";
+        String fileToAnalyze = "C:\\johny\\tmp\\twopc\\rand_node3_client200_request50.log";
         try {
             final int HISTORY_LEN = 3;
             File file = new File(fileToAnalyze);

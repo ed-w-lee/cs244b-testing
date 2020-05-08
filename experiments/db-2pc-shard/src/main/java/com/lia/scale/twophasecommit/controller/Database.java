@@ -10,6 +10,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -279,12 +280,12 @@ public class Database {
         return res;
     }
 
-    private ResponseEntity putToUrl(String host, int port, String com, String message, boolean retryForever){
+    public ResponseEntity putToUrl(String host, int port, String com, String message, boolean retryForever){
         try{
             URL url = new URL("http", host, port, com);
-            HttpURLConnection con = (HttpURLConnection) url.openConnection();
             int retryCount = SERVER_MAX_FULLLRETRY;
             do{
+                HttpURLConnection con = (HttpURLConnection) url.openConnection();
                 con.setRequestMethod("PUT");
                 con.setRequestProperty("Content-Type", "application/json; utf-8");
                 con.setRequestProperty("Accept", "application/json");
@@ -300,15 +301,44 @@ public class Database {
                     con.disconnect();
                     return  new ResponseEntity(HttpStatus.OK);
                 }
+                con.disconnect();
                 Thread.sleep(17*(SERVER_MAX_FULLLRETRY-retryCount));
                 System.out.printf("Warning: retry %d host %s com %s port %d.\n", retryCount, host, com, port);
             }while (retryForever && retryCount-- > 0);
-            con.disconnect();
         } catch ( Exception e) {
             e.printStackTrace();
             System.out.printf("Error: Unexpected exception\n");
         }
         return new ResponseEntity(HttpStatus.NOT_MODIFIED);
+    }
+
+    public String getValFromServer(String host, int port, String com, String key) throws IOException {
+        String res = "";
+        URL url = new URL("http", host, port, com);
+        HttpURLConnection con = (HttpURLConnection) url.openConnection();
+        con.setRequestMethod("GET");
+        con.setConnectTimeout(4000);
+        con.setReadTimeout(4000);
+        int status = con.getResponseCode();
+        if (status == 200) {
+            BufferedReader in = new BufferedReader(
+                    new InputStreamReader(con.getInputStream()));
+            String inputLine;
+            StringBuffer content = new StringBuffer();
+            while ((inputLine = in.readLine()) != null) {
+                content.append(inputLine);
+            }
+            in.close();
+            JsonParser stringParser = JsonParserFactory.getJsonParser();
+            Map<String, Object> resultJson = stringParser.parseMap(content.toString());
+            // {id:"1" "host":-1}
+            if (resultJson.containsKey(key)){
+                res = (String)resultJson.get(key);
+            }
+        }
+        con.disconnect();
+
+        return res;
     }
 
 }

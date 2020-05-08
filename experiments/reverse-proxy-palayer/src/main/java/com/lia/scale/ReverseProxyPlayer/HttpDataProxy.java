@@ -63,17 +63,22 @@ public class HttpDataProxy extends Thread  {
                                 if (putPos >= 0 && putPos < httpPos){
                                     String httpCom = requestString.substring(putPos + 5, httpPos - 1);
                                     String part = String.format("%d,%s", serverPort, httpCom);
-                                    sleepFromVisited = VisitedTri.add(part)/100;
+                                    sleepFromVisited = VisitedTri.add(part);
+                                    sleepFromVisited *= sleepFromVisited;
+                                    //sleepFromVisited = randomGenerator.nextInt(2000);
                                     System.out.printf("%s,%d\n", part, sleepFromVisited);
                                 }
                             }
                             // TODO: respond to server/delay/skip?
 
                             if (sleepFromVisited > 0){
-                                //Thread.sleep(randomGenerator.nextInt(20));
                                 Thread.sleep(sleepFromVisited);
                             }
                             outToServer.write(request, 0, bytes_read);
+                            if (sleepFromVisited < 200) {
+                            } else {
+                                //inFromClient.
+                            }
                             outToServer.flush();
                         }
                     } catch (Exception e) {

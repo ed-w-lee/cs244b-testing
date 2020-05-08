@@ -13,6 +13,7 @@ public class VisitedTri {
     static Map<String, Integer> variants = new HashMap<>();
     static int variantID = 0, lastOne = 0, lastTwo = 0;
     static int[][][] visitedTri = new int[INI_MAP_SIZE][INI_MAP_SIZE][INI_MAP_SIZE];
+    static long requestCount = 0;
 
 
     public static VisitedTri getVisitedTri(){
@@ -29,8 +30,13 @@ public class VisitedTri {
             nowCount = visitedTri[lastTwo][lastOne][id]++;
             lastTwo = lastOne;
             lastOne = id;
+            requestCount++;
         }
-        return nowCount;
+        int requestBuckets = variants.size()*variants.size()*variants.size();
+        if (nowCount < requestCount/requestBuckets){
+            return 0;
+        }
+        return (int)(nowCount - requestCount/requestBuckets);
     }
 
 }
