@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "dirent.h"
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <fstream>
@@ -15,12 +16,14 @@
 #include <sys/prctl.h>
 #include <sys/ptrace.h>
 #include <sys/reg.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/user.h>
 #include <sys/wait.h>
 #include <syscall.h>
 #include <unistd.h>
 
+#include <queue>
 #include <string>
 #include <vector>
 
@@ -102,6 +105,7 @@ void _read_from_proc(pid_t child, char *out, char *addr, size_t len) {
 
     val = ptrace(PTRACE_PEEKTEXT, child, addr + i, NULL);
     if (val == -1) {
+      fprintf(stderr, "failed to PEEKTEXT\n");
       exit(1);
     }
 
@@ -128,10 +132,12 @@ void _write_to_proc(pid_t child, char *to_write, char *addr, size_t len) {
 
 namespace Filter {
 
+const std::string Manager::suffix = ".__bk";
+
 Manager::Manager(std::vector<std::string> command, sockaddr_in old_addr,
-                 sockaddr_in new_addr, bool ignore_stdout)
-    : command(command), ignore_stdout(ignore_stdout), old_addr(old_addr),
-      new_addr(new_addr), fds(), sockfds() {
+                 sockaddr_in new_addr, std::string prefix, bool ignore_stdout)
+    : command(command), ignore_stdout(ignore_stdout), prefix(prefix),
+      old_addr(old_addr), new_addr(new_addr), fds(), sockfds() {
   printf("[FILTER] creating with command: %s %s\n", command[0].c_str(),
          command[1].c_str());
 
@@ -147,6 +153,8 @@ void Manager::toggle_node() {
 }
 
 void Manager::start_node() {
+  restore_files();
+
   pid_t pid;
   if ((pid = fork()) == 0) {
     /* If open syscall, trace */
@@ -155,6 +163,8 @@ void Manager::start_node() {
       dup2(devNull, STDOUT_FILENO);
     }
 
+    // set up seccomp for tracing syscalls
+    // https://www.alfonsobeato.net/c/filter-and-modify-system-calls-with-seccomp-and-ptrace/
     int n_syscalls =
         (sizeof(syscalls_intercept) / sizeof(syscalls_intercept[0]));
     int filter_len = n_syscalls + 3;
@@ -199,7 +209,39 @@ void Manager::start_node() {
   int status;
   waitpid(pid, &status, 0);
   ptrace(PTRACE_SETOPTIONS, pid, 0,
-         PTRACE_O_TRACESECCOMP | PTRACE_O_TRACESYSGOOD);
+         PTRACE_O_TRACESECCOMP | PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACEEXEC);
+
+  ptrace(PTRACE_CONT, child, NULL, NULL);
+  waitpid(pid, &status, 0);
+  if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_EXEC << 8))) {
+    // disable vDSO to ensure we can intercept gettimeofday
+    // reference: https://stackoverflow.com/a/52402306
+    char todo[2000];
+    long rsp = ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RSP, 0);
+    size_t num_to_get = command.size() + 70;
+    _read_from_proc(child, (char *)todo, (char *)rsp,
+                    num_to_get * sizeof(long));
+    int num_nulls = 0;
+    int auxv_idx = 0;
+    for (size_t i = 0; i < num_to_get; i++) {
+      long data;
+      long ptr = *(long *)(&todo[i * sizeof(long)]);
+      if (num_nulls == 2) {
+        auxv_idx++;
+        if (auxv_idx == 2) {
+          // AT_SYSINFO_EHDR (vDSO location) experimentally found to be 2nd
+          // element in aux vector (at least in my OS **thinking**)
+          printf("[FILTER] overwriting vDSO: %lx\n", ptr);
+          long null = 0;
+          _write_to_proc(child, (char *)&null, (char *)rsp + (i * sizeof(long)),
+                         sizeof(long));
+        }
+      }
+      if (ptr == 0) {
+        num_nulls++;
+      }
+    }
+  }
 
   child_state = ST_STOPPED;
 }
@@ -212,6 +254,9 @@ void Manager::stop_node() {
   child = -1;
   child_state = ST_DEAD;
 
+  for (auto &tup : fds) {
+    backup_file(tup.second);
+  }
   fds.clear();
   sockfds.clear();
 }
@@ -219,22 +264,16 @@ void Manager::stop_node() {
 Event Manager::to_next_event() {
   if (child_state == ST_DEAD)
     return EV_DEAD;
+  else if (child_state == ST_WAITING_FSYNC)
+    handle_fsync();
 
   int status;
   while (1) {
-    if (child_state == ST_STOPPED) {
-      // printf("[FILTER] Sending continue to restart\n");
-      ptrace(PTRACE_CONT, child, 0, 0);
-      child_state = ST_RUNNING;
-    }
+    ptrace(PTRACE_CONT, child, 0, 0);
+    child_state = ST_RUNNING;
     // TODO - figure out how to do this so we don't get stuck waiting for an
     // epoll_wait or something else blocking
-    if (waitpid(child, &status, WNOHANG) == 0) {
-      if (child_state == ST_POLLING) {
-        return EV_POLLING;
-      }
-      continue;
-    }
+    waitpid(child, &status, 0);
     if (WIFSTOPPED(status)) {
       if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_SECCOMP << 8))) {
         // check if it's one of the syscalls we want to handle
@@ -249,10 +288,16 @@ Event Manager::to_next_event() {
           // polling-related
         case SYS_poll:
         case SYS_select:
-          // printf("[FILTER] Sending continue due to polling\n");
-          ptrace(PTRACE_CONT, child, 0, 0);
-          child_state = ST_POLLING;
+          printf("[FILTER] begin polling\n");
+          // ptrace(PTRACE_CONT, child, 0, 0);
+          // child_state = ST_POLLING;
           return EV_POLLING;
+        case SYS_gettimeofday:
+          printf("[FILTER] handle gettimeofday\n");
+          continue;
+        case SYS_clock_gettime:
+          printf("[FILTER] handle clock_gettime\n");
+          continue;
 
           // filesystem-related
         case SYS_openat:
@@ -261,16 +306,12 @@ Event Manager::to_next_event() {
         case SYS_open:
           handle_open(false);
           continue;
-        case SYS_stat:
-          handle_stat();
-          continue;
-        case SYS_mknod:
-          handle_mknod();
-          continue;
+        case SYS_syncfs:
         case SYS_fdatasync:
         case SYS_fsync:
-          handle_fsync();
-          continue;
+          printf("[FILTER] about to fsync\n");
+          child_state = ST_WAITING_FSYNC;
+          return EV_SYNCFS;
 
           // network-related
         case SYS_socket:
@@ -299,30 +340,87 @@ Event Manager::to_next_event() {
   }
 }
 
+void Manager::backup_file(std::string path) {
+  if (strncmp(path.c_str(), prefix.c_str(), prefix.size()) != 0) {
+    fprintf(stderr, "attempting to backup file: %s without correct prefix\n",
+            path.c_str());
+    return;
+  }
+  std::string back_file(path);
+  back_file.append(suffix);
+  printf("[FILTER] Copying %s to %s\n", path.c_str(), back_file.c_str());
+  std::ifstream src(path, std::ios::binary);
+  std::ofstream dst(back_file, std::ios::binary);
+  dst << src.rdbuf();
+}
+
+void Manager::restore_files() {
+  // recursively iterate over any things
+  std::queue<std::string> paths;
+  paths.push(prefix);
+  struct stat s;
+  while (!paths.empty()) {
+    std::string path = paths.front();
+    paths.pop();
+    if (stat(path.c_str(), &s) == 0) {
+      if (s.st_mode & S_IFDIR) {
+        if (path[0] != '/') {
+          continue;
+        }
+        // directory
+        DIR *dir;
+        struct dirent *ent;
+        if ((dir = opendir(path.c_str())) != NULL) {
+          while ((ent = readdir(dir)) != NULL) {
+            std::string entry(ent->d_name);
+            if (entry.compare(".") == 0 || entry.compare("..") == 0) {
+              continue;
+            }
+            std::string full_path(path);
+            full_path.append("/");
+            full_path.append(entry);
+            paths.push(full_path);
+          }
+          closedir(dir);
+        } else {
+          fprintf(stderr, "[FILTER] failed to open directory of %s: %s\n",
+                  path.c_str(), strerror(errno));
+          exit(1);
+        }
+      } else if (s.st_mode & S_IFREG) {
+        // regular file
+        if (path.length() > suffix.length() &&
+            path.compare(path.length() - suffix.length(), suffix.length(),
+                         suffix) != 0) {
+          std::string back_file(path);
+          back_file.append(suffix);
+          printf("[FILTER] Copying %s to %s\n", back_file.c_str(),
+                 path.c_str());
+          std::ifstream src(back_file, std::ios::binary);
+          std::ofstream dst(path, std::ios::binary);
+          dst << src.rdbuf();
+        }
+      } else {
+        fprintf(stderr, "[FILTER] unexpected filetype of: %s\n", path.c_str());
+        exit(1);
+      }
+    } else {
+      if (errno != ENOENT) {
+        perror("[FILTER] unexpected stat failure: ");
+        exit(1);
+      }
+    }
+  }
+}
+
 void Manager::handle_open(bool at) {
-  printf("handling open with %s\n", at ? "at" : "no at");
   char orig_file[PATH_MAX];
-  char new_file[PATH_MAX];
 
   int arg = at ? 2 : 1;
   _read_file(child, orig_file, arg);
-  printf("old: %s\n", orig_file);
+  printf("[FILTER] handling open%s: %s\n", at ? "at" : "", orig_file);
 
-  if (strncmp(prefix, orig_file, strlen(prefix)) == 0) {
-    if (strlen(orig_file) + strlen(suffix) + 10 < PATH_MAX) {
-      strcpy(new_file, orig_file);
-      strcpy(new_file + strlen(orig_file), suffix);
-      new_file[strlen(orig_file) + strlen(suffix) + 1] = 0;
-    } else {
-      fprintf(stderr, "too big of an argument rip\n");
-      exit(1);
-    }
-    printf("to write: %s\n", new_file);
-
-    _redirect_file(child, new_file, arg);
-    _read_file(child, new_file, arg);
-    printf("new: %s\n", new_file);
-
+  if (strncmp(prefix.c_str(), orig_file, strlen(prefix.c_str())) == 0) {
     // get file descriptor for the opened file so we can register it
     int status;
     ptrace(PTRACE_SYSCALL, child, 0, 0);
@@ -336,61 +434,10 @@ void Manager::handle_open(bool at) {
   }
 }
 
-void Manager::handle_stat() {
-  printf("handling stat\n");
-  char orig_file[PATH_MAX];
-  char new_file[PATH_MAX];
-
-  _read_file(child, orig_file, 1);
-  printf("old: %s\n", orig_file);
-
-  if (strncmp(prefix, orig_file, strlen(prefix)) == 0) {
-    if (strlen(orig_file) + strlen(suffix) + 10 < PATH_MAX) {
-      strcpy(new_file, orig_file);
-      strcpy(new_file + strlen(orig_file), suffix);
-      new_file[strlen(orig_file) + strlen(suffix) + 1] = 0;
-    } else {
-      fprintf(stderr, "too big of an argument rip\n");
-      exit(1);
-    }
-    printf("to write: %s\n", new_file);
-
-    _redirect_file(child, new_file, 1);
-    _read_file(child, new_file, 1);
-    printf("new: %s\n", new_file);
-  }
-}
-
-void Manager::handle_mknod() {
-  printf("handling mknod\n");
-  char orig_file[PATH_MAX];
-  char new_file[PATH_MAX];
-
-  _read_file(child, orig_file, 1);
-  printf("old: %s\n", orig_file);
-
-  if (strncmp(prefix, orig_file, strlen(prefix)) == 0) {
-    if (strlen(orig_file) + strlen(suffix) + 10 < PATH_MAX) {
-      strcpy(new_file, orig_file);
-      strcpy(new_file + strlen(orig_file), suffix);
-      new_file[strlen(orig_file) + strlen(suffix) + 1] = 0;
-    } else {
-      fprintf(stderr, "too big of an argument rip\n");
-      exit(1);
-    }
-    printf("to write: %s\n", new_file);
-
-    _redirect_file(child, new_file, 1);
-    _read_file(child, new_file, 1);
-    printf("new: %s\n", new_file);
-  }
-}
-
 void Manager::handle_fsync() {
-  printf("handling fsync\n");
+  printf("[FILTER] handling fsync\n");
 
   int fd = (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RDI, 0);
-  printf("fd: %d\n", fd);
 
   auto it = fds.find(fd);
   if (it != fds.end()) {
@@ -400,18 +447,12 @@ void Manager::handle_fsync() {
       exit(1);
     }
 
-    std::string back_file;
-    back_file = orig_file;
-    back_file.append(suffix);
-    printf("Copying %s to %s\n", back_file.c_str(), orig_file.c_str());
-    std::ifstream src(back_file, std::ios::binary);
-    std::ofstream dst(orig_file, std::ios::binary);
-    dst << src.rdbuf();
+    backup_file(orig_file);
   }
 }
 
 void Manager::handle_socket() {
-  printf("handling socket\n");
+  printf("[FILTER] handling socket\n");
 
   struct user_regs_struct regs;
   ptrace(PTRACE_GETREGS, child, 0, &regs);
@@ -429,7 +470,7 @@ void Manager::handle_socket() {
     if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
       uint64_t fd =
           (uint64_t)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RAX, 0);
-      printf("sockfd: %lu\n", fd);
+      printf("[FILTER] sockfd: %lu\n", fd);
       sockfds[fd] = false;
     }
   }

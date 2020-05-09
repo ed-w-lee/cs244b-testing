@@ -14,13 +14,16 @@ const uint32_t syscalls_intercept[] = {
     // polling-related
     SYS_select,
     SYS_poll,
+    SYS_gettimeofday,
+    SYS_clock_gettime,
     // filesystem-related
     SYS_open,
     SYS_openat,
+    SYS_syncfs,
     SYS_fsync,
     SYS_fdatasync,
-    SYS_stat,
-    SYS_mknod,
+    // SYS_stat,
+    // SYS_mknod,
     // network-related
     SYS_socket,
     SYS_bind,
@@ -43,12 +46,13 @@ enum State {
   ST_POLLING,
   ST_STOPPED,
   ST_RUNNING,
+  ST_WAITING_FSYNC,
 };
 
 class Manager {
 public:
   Manager(std::vector<std::string> command, sockaddr_in old_addr,
-          sockaddr_in new_addr, bool ignore_stdout);
+          sockaddr_in new_addr, std::string prefix, bool ignore_stdout);
 
   Event to_next_event();
 
@@ -65,20 +69,21 @@ private:
   pid_t child;
   bool ignore_stdout;
   State child_state;
+  std::string prefix;
   sockaddr_in old_addr, new_addr;
 
   std::unordered_map<int, std::string> fds;
   std::unordered_map<int, bool> sockfds; // is_redirected
 
-  const char *suffix = ".__bk";
-  const char *prefix = "/tmp/our_cs244b_test_13245646/";
+  static const std::string suffix;
 
   void start_node();
   void stop_node();
 
+  void backup_file(std::string path);
+  void restore_files();
+
   void handle_open(bool at);
-  void handle_stat();
-  void handle_mknod();
   void handle_fsync();
 
   // TODO - make sure we handle non-synchronous reads / writes

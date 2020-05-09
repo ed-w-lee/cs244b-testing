@@ -6,7 +6,7 @@
 #include <sys/types.h>
 #include <syscall.h>
 
-#include <queue>
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,10 +26,12 @@ public:
 
   // retrieves all messages intended for the node
   // (node idx or client) -> queue of messages
-  const std::unordered_map<int, std::queue<std::vector<char>>> &get_msgs();
+  const std::unordered_map<int, std::deque<std::vector<char>>> &get_msgs();
 
   // TCP semantics, so node<->node should be in order
   void allow_next_msg(int fd);
+
+  void print_state();
 
 private:
   bool node_alive;
@@ -45,7 +47,7 @@ private:
   std::unordered_map<int, int> related_fd;
 
   // waiting_key -> queue of messages
-  std::unordered_map<int, std::queue<std::vector<char>>> waiting_msgs;
+  std::unordered_map<int, std::deque<std::vector<char>>> waiting_msgs;
 
   void stop_node();
 
@@ -53,5 +55,5 @@ private:
   void unregister_fd(int fd);
   void link_fds(int fd1, int fd2);
 
-  void poll_for_events();
+  bool poll_for_events();
 };

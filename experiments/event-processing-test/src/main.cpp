@@ -22,8 +22,11 @@
 #include <syscall.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdlib>
+#include <fstream>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -62,13 +65,22 @@ int main(int argc, char **argv) {
   newaddrs[2].sin_addr.s_addr = inet_addr("127.0.0.30");
 
   std::vector<Manager> managers;
+  std::set<int> waiting_nodes;
   for (int i = 0; i < NUM_NODES; i++) {
     std::vector<std::string> command;
     command.push_back(std::string(argv[1]));
     command.push_back(std::to_string(i));
 
-    managers.push_back(
-        Filter::Manager(command, oldaddrs[i], newaddrs[i], false));
+    std::string node_addr(inet_ntoa(oldaddrs[i].sin_addr));
+    std::string rafted_prefix("/tmp/rafted_tcpmvp_");
+    rafted_prefix.append(node_addr);
+
+    managers.push_back(Filter::Manager(command, oldaddrs[i], newaddrs[i],
+                                       rafted_prefix, false));
+    waiting_nodes.insert(i);
+    while (managers[i].to_next_event() != EV_EXIT)
+      ;
+    exit(1);
   }
 
   std::vector<sockaddr_in> newaddrs_vec;
@@ -84,49 +96,86 @@ int main(int argc, char **argv) {
     proxies.push_back(proxy);
   }
 
+  std::ofstream orch_log("/tmp/orch_log.txt", std::ios_base::trunc);
+
+  unsigned long long cnt = 0;
   while (true) {
+    int node_idx;
+    if (waiting_nodes.size() > 0) {
+      int waiting_idx = rng() % waiting_nodes.size();
+      node_idx = *std::next(waiting_nodes.begin(), waiting_idx);
+      printf("[ORCH] Progressing %d out of %lu nodes\n", node_idx,
+             waiting_nodes.size());
+    } else {
+      // everything is currently polling or dead
+      node_idx = (cnt++) % NUM_NODES;
+      printf("[ORCH] Progressing %d\n", node_idx);
+    }
+    orch_log << node_idx << "/" << waiting_nodes.size() << std::endl;
+
     for (auto &proxy : proxies) {
       auto &q = proxy.get_msgs();
-      for (auto &x : q) {
-        if (x.second.size() > 0) {
-          proxy.allow_next_msg(x.first);
+      std::vector<int> send_fds;
+      send_fds.reserve(q.size());
+      for (const auto &pair : q) {
+        send_fds.push_back(pair.first);
+      }
+      printf("q_size: %lu send_fds: [", q.size());
+      for (const auto &x : send_fds) {
+        printf("%d,", x);
+      }
+      printf("]\n");
+
+      for (const auto &x : send_fds) {
+        if (q.at(x).size() > 0) {
+          proxy.print_state();
+          if (rng() % 2 == 0) {
+            proxy.allow_next_msg(x);
+          }
         }
       }
     }
-    for (int i = 0; i < NUM_NODES; i++) {
-      auto &manager = managers[i];
+
+    auto &manager = managers[node_idx];
+    bool to_continue;
+    do {
+      to_continue = false;
       switch (manager.to_next_event()) {
       case Filter::EV_SENDTO:
       case Filter::EV_SYNCFS: {
+        orch_log << "waiting" << std::endl;
+        waiting_nodes.insert(node_idx);
         int x = rng();
-        printf("[ORCH] rng for %d: %d\n", i, x);
-        if (x % 10 == 0) {
-          printf("[ORCH] Toggled node - %d\n", i);
+        if (x % 100 == 0) {
+          orch_log << "kill" << std::endl;
+          printf("[ORCH STATE] Toggled node - %d\n", node_idx);
           manager.toggle_node();
-          proxies[i].toggle_node();
+          proxies[node_idx].toggle_node();
         }
-        continue;
+        break;
       }
       case Filter::EV_DEAD: {
+        orch_log << "dead" << std::endl;
+        waiting_nodes.erase(node_idx);
         int x = rng();
-        printf("[ORCH] rng for %d: %d\n", i, x);
-        if (x % 2 == 0) {
-          printf("[ORCH] Toggled node - %d\n", i);
+        if (x % 10 == 0) {
+          orch_log << "revive" << std::endl;
+          printf("[ORCH STATE] Toggled node - %d\n", node_idx);
           manager.toggle_node();
-          proxies[i].toggle_node();
-          i--; // get node to start listening before anything else
+          proxies[node_idx].toggle_node();
+          to_continue = true;
         }
-        continue;
+        break;
       }
       case Filter::EV_POLLING: {
-        // printf("[ORCH] node %d is polling\n", i);
-        continue;
+        waiting_nodes.erase(node_idx);
+        break;
       }
       case Filter::EV_EXIT: {
-        fprintf(stderr, "[ORCH] node %d exited unexpectedly.\n", i);
+        fprintf(stderr, "[ORCH] node %d exited unexpectedly.\n", node_idx);
         exit(1);
       }
       }
-    }
+    } while (to_continue);
   }
 }
