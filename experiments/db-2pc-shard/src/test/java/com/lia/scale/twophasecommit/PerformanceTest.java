@@ -12,6 +12,8 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.ServerSocket;
 import java.net.URL;
+import java.time.Duration;
+import java.time.ZonedDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
@@ -30,7 +32,7 @@ public class PerformanceTest {
 
         int numberOfUsers = 200;
 
-        int startID = 0, endID = 50;
+        int startID = 0, endID = 100;
         String host = "localhost";
         String com = "/2pc";
         int startPort = 24001;
@@ -65,7 +67,9 @@ public class PerformanceTest {
         }
 
         boolean isActive = true;
-        while (isActive){
+        int maxDeltaInMinutes = 3*60;
+        ZonedDateTime start = ZonedDateTime.now();
+        while (isActive && Duration.between(start, ZonedDateTime.now()).toMinutes() < maxDeltaInMinutes){
             isActive = false;
             for (int i = 0; !isActive && i < numberOfUsers; i++){
                 isActive = activeUsers[i].isAlive();

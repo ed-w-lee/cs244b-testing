@@ -2,19 +2,37 @@ package com.lia.scale.ReverseProxyPlayer;
 
 import java.io.*;
 import java.net.Socket;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class HttpDataProxy extends Thread  {
+
+    public static final String VISITED_RND = "rnd";
+    public static final String VISITED_EXP = "exp";
+    public static final String VISITED_TREE = "tree";
+
+    private static Pattern patternHTTP_COM_TRID = Pattern.compile(".*PUT (/\\w+).+trid\":\"(\\w+)\".*", Pattern.DOTALL);
     private Socket sClient;
     private String SERVER_URL = "";
+    private String visitedMode = VISITED_RND;
     private int SERVER_PORT = 0;
     private Random randomGenerator = new Random();
+    private int timeLimit ;
+    private int timeCrashTrashhold ;
+    Map<String, String> params = null;
 
-    HttpDataProxy(Socket sClient, String ServerUrl, int ServerPort) {
+    HttpDataProxy(Socket sClient, String ServerUrl, int ServerPort, Map<String, String> params) {
         this.SERVER_URL = ServerUrl;
         this.SERVER_PORT = ServerPort;
         this.sClient = sClient;
+        this.params = params;
+        this.timeLimit = Integer.valueOf(params.get("-t"));
+        this.visitedMode = String.valueOf(params.get("-v"));
+        this.timeCrashTrashhold = this.timeLimit * (100 - Integer.valueOf(params.get("-x"))) / 100;
         this.start();
     }
 
@@ -57,28 +75,37 @@ public class HttpDataProxy extends Thread  {
                             //REQUEST:13: PUT /apply HTTP/1.1
 
                             int sleepFromVisited = 0;
-                            int httpPos = requestString.indexOf("HTTP/1.1");
-                            if (httpPos >= 0){
-                                int putPos = requestString.indexOf("PUT /");
-                                if (putPos >= 0 && putPos < httpPos){
-                                    String httpCom = requestString.substring(putPos + 5, httpPos - 1);
-                                    String part = String.format("%d,%s", serverPort, httpCom);
+                            String[] parsedComTrId = parsePartTrId(requestString);
+                            if (parsedComTrId != null && parsedComTrId.length == 2){
+                                String part = String.format("%d,%s", serverPort, parsedComTrId[0]);
+                                if ( visitedMode.equals(VISITED_RND) ){
+                                    sleepFromVisited = randomGenerator.nextInt(timeLimit);
+                                } else if ( visitedMode.equals(VISITED_EXP) ){
                                     sleepFromVisited = VisitedTri.add(part);
                                     sleepFromVisited *= sleepFromVisited;
-                                    //sleepFromVisited = randomGenerator.nextInt(2000);
-                                    System.out.printf("%s,%d\n", part, sleepFromVisited);
+                                } else if ( visitedMode.equals(VISITED_TREE) ){
+                                    sleepFromVisited = VisitedTree.addSuccess(part, parsedComTrId[1]);
+                                    sleepFromVisited *= sleepFromVisited;
                                 }
+                                System.out.printf("%s,%d\n", part, sleepFromVisited);
                             }
                             // TODO: respond to server/delay/skip?
 
-                            if (sleepFromVisited > 0){
+                            if (sleepFromVisited > timeCrashTrashhold){
+                                String part = String.format("%d,%s", serverPort, "internalcrash");
+                                if (visitedMode.equals(VISITED_EXP)) {
+                                    sleepFromVisited = VisitedTri.add(part);
+                                } else if ( visitedMode.equals(VISITED_TREE) && parsedComTrId != null && parsedComTrId.length == 2){
+                                    sleepFromVisited = VisitedTree.addSuccess(part, parsedComTrId[1]);
+                                }
+                                System.out.printf("%s,%d\n", part, sleepFromVisited);
+                                Thread.sleep(sleepFromVisited);
+                                outToServer.close();
+                                outToClient.close();
+                            } else if (sleepFromVisited > 0){
                                 Thread.sleep(sleepFromVisited);
                             }
                             outToServer.write(request, 0, bytes_read);
-                            if (sleepFromVisited < 200) {
-                            } else {
-                                //inFromClient.
-                            }
                             outToServer.flush();
                         }
                     } catch (Exception e) {
@@ -124,5 +151,16 @@ public class HttpDataProxy extends Thread  {
         } catch (IOException e) {
             e.printStackTrace();
         }
+    }
+
+    public static String[] parsePartTrId(String ex){
+        Matcher matcherComTr = patternHTTP_COM_TRID.matcher(ex);
+        String[] res = null;
+        if (matcherComTr.find()) {
+            res = new String[2];
+            res[0] = matcherComTr.group(1);
+            res[1] = matcherComTr.group(2);
+        }
+        return res;
     }
 }
