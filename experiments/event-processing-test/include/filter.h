@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <syscall.h>
+#include <time.h>
 #include <unordered_map>
 
 namespace Filter {
@@ -65,16 +66,34 @@ public:
   void toggle_node();
 
 private:
+  // the command being run by the manager for starting the node
   std::vector<std::string> command;
+
+  // for managing virtual clocks. we use highest granularity duration to
+  // generalize across different polling syscalls
+  struct timespec offset;
+
+  // pid of the node (if it's running)
   pid_t child;
+
+  // whether we should redirect stdout to /dev/null
   bool ignore_stdout;
+
+  // state of the child (running, stopped, etc.)
   State child_state;
+
+  // prefix of files in the file system that should be tracked with fsync
+  // (this isn't necessarily needed, but does make our life easier)
   std::string prefix;
+
+  // how to redirect addresses
   sockaddr_in old_addr, new_addr;
 
-  std::unordered_map<int, std::string> fds;
-  std::unordered_map<int, bool> sockfds; // is_redirected
+  // tracking filesystem and socket file descriptors
+  std::unordered_map<int, std::string> fds; // value: absolute path of file
+  std::unordered_map<int, bool> sockfds;    // value: is_redirected
 
+  // suffix to append to "properly fsynced" files
   static const std::string suffix;
 
   void start_node();
@@ -82,6 +101,13 @@ private:
 
   void backup_file(std::string path);
   void restore_files();
+
+  // should set timeout to 0
+  void handle_poll();
+  void handle_select();
+
+  void handle_gettimeofday();
+  void handle_clock_gettime();
 
   void handle_open(bool at);
   void handle_fsync();

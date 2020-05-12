@@ -157,6 +157,7 @@ bool Proxy::poll_for_events() {
   const size_t MAX_BUF = 2000;
   struct epoll_event evs[NUM_EVENTS];
   bool something_occurred = false;
+
   int num_events = epoll_wait(efd, (epoll_event *)&evs, NUM_EVENTS, 0);
   for (int i = 0; i < num_events; i++) {
     if (evs[i].events & EPOLLIN) {

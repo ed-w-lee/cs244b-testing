@@ -24,3 +24,9 @@ testprog: $(TEST_DIR)/test.c
 clean:
 	rm -f orch filter.o proxy.o testprog
 
+cleantest:
+	rm -f /tmp/orch_log.txt
+	rm -rf /tmp/rafted_*
+	rm -rf /tmp/filter_*
+	rm -f /tmp/trace
+

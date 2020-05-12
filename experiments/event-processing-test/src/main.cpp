@@ -23,11 +23,13 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <random>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "filter.h"
@@ -77,10 +79,11 @@ int main(int argc, char **argv) {
 
     managers.push_back(Filter::Manager(command, oldaddrs[i], newaddrs[i],
                                        rafted_prefix, false));
-    waiting_nodes.insert(i);
-    while (managers[i].to_next_event() != EV_EXIT)
-      ;
-    exit(1);
+    // // FIXME temporary for testing virtual clock stuff
+    // waiting_nodes.insert(i);
+    // while (managers[i].to_next_event() != EV_EXIT)
+    //   ;
+    // exit(1);
   }
 
   std::vector<sockaddr_in> newaddrs_vec;
@@ -99,7 +102,10 @@ int main(int argc, char **argv) {
   std::ofstream orch_log("/tmp/orch_log.txt", std::ios_base::trunc);
 
   unsigned long long cnt = 0;
-  while (true) {
+  unsigned long long it = 0;
+  bool to_send[NUM_NODES] = {false};
+  bool has_sent = false;
+  while (it++ < 2000) {
     int node_idx;
     if (waiting_nodes.size() > 0) {
       int waiting_idx = rng() % waiting_nodes.size();
@@ -113,6 +119,13 @@ int main(int argc, char **argv) {
     }
     orch_log << node_idx << "/" << waiting_nodes.size() << std::endl;
 
+    if (has_sent) {
+      // try add more consistency to network messages by waiting if a network
+      // message was sent
+      // TODO probably just make the poll blocking if we know a msg was sent
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      has_sent = false;
+    }
     for (auto &proxy : proxies) {
       auto &q = proxy.get_msgs();
       std::vector<int> send_fds;
@@ -140,11 +153,16 @@ int main(int argc, char **argv) {
     bool to_continue;
     do {
       to_continue = false;
+      if (to_send[node_idx]) {
+        has_sent = true;
+        to_send[node_idx] = false;
+      }
       switch (manager.to_next_event()) {
       case Filter::EV_SENDTO:
       case Filter::EV_SYNCFS: {
         orch_log << "waiting" << std::endl;
         waiting_nodes.insert(node_idx);
+        to_send[node_idx] = true;
         int x = rng();
         if (x % 100 == 0) {
           orch_log << "kill" << std::endl;

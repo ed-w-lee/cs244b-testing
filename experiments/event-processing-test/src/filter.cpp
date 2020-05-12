@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "dirent.h"
+#include "time.h"
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <fstream>
@@ -128,6 +129,7 @@ void _write_to_proc(pid_t child, char *to_write, char *addr, size_t len) {
     i += sizeof(long);
   }
 }
+
 } // namespace
 
 namespace Filter {
@@ -140,6 +142,9 @@ Manager::Manager(std::vector<std::string> command, sockaddr_in old_addr,
       old_addr(old_addr), new_addr(new_addr), fds(), sockfds() {
   printf("[FILTER] creating with command: %s %s\n", command[0].c_str(),
          command[1].c_str());
+
+  offset.tv_sec = 0;
+  offset.tv_nsec = 0;
 
   start_node();
 }
@@ -161,6 +166,13 @@ void Manager::start_node() {
     if (ignore_stdout) {
       int devNull = open("/dev/null", O_WRONLY);
       dup2(devNull, STDOUT_FILENO);
+    } else {
+      char blah[200];
+      strcpy(blah, "/tmp/filter_");
+      strcat(blah, command[1].c_str());
+      fprintf(stderr, "[FILTER] create output file: %s\n", blah);
+      int file = open(blah, O_WRONLY | O_CREAT | O_APPEND, 0644);
+      dup2(file, STDOUT_FILENO);
     }
 
     // set up seccomp for tracing syscalls
@@ -224,7 +236,6 @@ void Manager::start_node() {
     int num_nulls = 0;
     int auxv_idx = 0;
     for (size_t i = 0; i < num_to_get; i++) {
-      long data;
       long ptr = *(long *)(&todo[i * sizeof(long)]);
       if (num_nulls == 2) {
         auxv_idx++;
@@ -266,6 +277,8 @@ Event Manager::to_next_event() {
     return EV_DEAD;
   else if (child_state == ST_WAITING_FSYNC)
     handle_fsync();
+  else if (child_state == ST_POLLING)
+    handle_poll();
 
   int status;
   while (1) {
@@ -288,15 +301,13 @@ Event Manager::to_next_event() {
           // polling-related
         case SYS_poll:
         case SYS_select:
-          printf("[FILTER] begin polling\n");
-          // ptrace(PTRACE_CONT, child, 0, 0);
-          // child_state = ST_POLLING;
+          child_state = ST_POLLING;
           return EV_POLLING;
         case SYS_gettimeofday:
-          printf("[FILTER] handle gettimeofday\n");
+          handle_gettimeofday();
           continue;
         case SYS_clock_gettime:
-          printf("[FILTER] handle clock_gettime\n");
+          handle_clock_gettime();
           continue;
 
           // filesystem-related
@@ -338,7 +349,7 @@ Event Manager::to_next_event() {
       return EV_EXIT;
     }
   }
-}
+} // namespace Filter
 
 void Manager::backup_file(std::string path) {
   if (strncmp(path.c_str(), prefix.c_str(), prefix.size()) != 0) {
@@ -558,6 +569,132 @@ void Manager::handle_getsockname() {
            ntohs(addr_to_overwrite.sin_port));
     _write_to_proc(child, (char *)&addr_to_overwrite, (char *)sockaddr_ptr,
                    sizeof(sockaddr_in));
+  }
+}
+
+const long long i1e3 = 1000;
+const long long i1e6 = 1000 * 1000;
+const long long i1e9 = 1000 * 1000 * 1000;
+
+void Manager::handle_gettimeofday() {
+  printf("[FILTER] handling gettimeofday\n");
+
+  int status;
+  ptrace(PTRACE_SYSCALL, child, 0, 0);
+  waitpid(child, &status, 0);
+  if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+    struct user_regs_struct regs;
+    ptrace(PTRACE_GETREGS, child, 0, &regs);
+    if (regs.rsi != 0) {
+      fprintf(stderr, "[FILTER] Non-NULL timezone arg: %p\n", (void *)regs.rsi);
+      exit(1);
+    } else if (regs.rax != 0) {
+      fprintf(stderr, "[FILTER] gettimeofday failed\n");
+      exit(1);
+    }
+
+    struct timeval old_tv, new_tv;
+    _read_from_proc(child, (char *)&old_tv, (char *)regs.rdi,
+                    sizeof(struct timeval));
+    new_tv.tv_usec = old_tv.tv_usec + (offset.tv_nsec / i1e3);
+    new_tv.tv_sec = old_tv.tv_sec + offset.tv_sec + (new_tv.tv_usec / i1e6);
+    new_tv.tv_usec %= i1e6;
+    printf("[FILTER] writing {sec: %ld, usec: %ld} as time\n", new_tv.tv_sec,
+           new_tv.tv_usec);
+    _write_to_proc(child, (char *)&new_tv, (char *)regs.rdi,
+                   sizeof(struct timeval));
+  }
+}
+
+void Manager::handle_clock_gettime() {
+  printf("[FILTER] handling clock_gettime()\n");
+
+  int status;
+  ptrace(PTRACE_SYSCALL, child, 0, 0);
+  waitpid(child, &status, 0);
+  if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+    struct user_regs_struct regs;
+    ptrace(PTRACE_GETREGS, child, 0, &regs);
+    if (regs.rax != 0) {
+      fprintf(stderr, "[FILTER] gettimeofday failed\n");
+      exit(1);
+    }
+
+    struct timespec old_tp, new_tp;
+    _read_from_proc(child, (char *)&old_tp, (char *)regs.rsi,
+                    sizeof(struct timeval));
+    new_tp.tv_nsec = old_tp.tv_nsec + offset.tv_nsec;
+    new_tp.tv_sec = old_tp.tv_sec + offset.tv_sec + (new_tp.tv_nsec / i1e9);
+    new_tp.tv_nsec %= i1e9;
+    printf("[FILTER] writing {sec: %ld, nsec: %ld} as time\n", new_tp.tv_sec,
+           new_tp.tv_nsec);
+    _write_to_proc(child, (char *)&new_tp, (char *)regs.rsi,
+                   sizeof(struct timeval));
+  }
+}
+
+void Manager::handle_poll() {
+  // get timeout param
+  struct user_regs_struct regs;
+  ptrace(PTRACE_GETREGS, child, 0, &regs);
+  struct timespec old_timeout;
+  switch (regs.orig_rax) {
+  case SYS_poll: {
+    printf("[FILTER] handling poll\n");
+    int timeout_ms = regs.rdx;
+    regs.rdx = 0;
+    printf("[FILTER] overwrite poll timeout from %dms to 0\n", timeout_ms);
+    ptrace(PTRACE_SETREGS, child, 0, &regs);
+
+    old_timeout.tv_sec = timeout_ms / i1e3;
+    old_timeout.tv_nsec = (timeout_ms % i1e3) * i1e6;
+    break;
+  }
+  case SYS_select: {
+    printf("[FILTER] handling select\n");
+    struct timeval old_us;
+
+    long timeout_addr = regs.r8;
+    _read_from_proc(child, (char *)&old_us, (char *)timeout_addr,
+                    sizeof(struct timeval));
+    old_timeout.tv_sec = old_us.tv_sec;
+    old_timeout.tv_nsec = old_us.tv_usec * i1e3;
+
+    printf("[FILTER] overwrite poll timeout from {sec: %ld, usec: %ld} to 0\n",
+           old_us.tv_sec, old_us.tv_usec);
+    old_us.tv_sec = 0;
+    old_us.tv_usec = 0;
+    long addr_to_write = regs.rsp - sizeof(struct timeval) - 64;
+    _write_to_proc(child, (char *)&old_us, (char *)addr_to_write,
+                   sizeof(struct timeval));
+    regs.r8 = addr_to_write;
+    ptrace(PTRACE_SETREGS, child, 0, &regs);
+    break;
+  }
+  default:
+    fprintf(stderr, "[FILTER] unhandled polling syscall: %llu\n",
+            regs.orig_rax);
+    exit(1);
+  }
+
+  int status;
+  ptrace(PTRACE_SYSCALL, child, 0, 0);
+  waitpid(child, &status, 0);
+  if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+    ptrace(PTRACE_GETREGS, child, 0, &regs);
+    int retval = regs.rax;
+    if (retval == 0) {
+      // no updates to polling, which means the program waited the entire time.
+      // increment offset to deal with it
+      printf("[FILTER] no results. updating offset\n");
+      offset.tv_nsec += old_timeout.tv_nsec;
+      offset.tv_sec += old_timeout.tv_sec + (offset.tv_nsec / i1e9);
+      offset.tv_nsec %= i1e9;
+    } else {
+      // updates to polling. just don't increment offset?
+      // TODO - see if we should increment the offset
+      printf("[FILTER] found results. no updates to offset\n");
+    }
   }
 }
 
