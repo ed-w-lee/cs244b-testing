@@ -143,8 +143,8 @@ Manager::Manager(std::vector<std::string> command, sockaddr_in old_addr,
   printf("[FILTER] creating with command: %s %s\n", command[0].c_str(),
          command[1].c_str());
 
-  offset.tv_sec = 0;
-  offset.tv_nsec = 0;
+  vtime.tv_sec = 244244;
+  vtime.tv_nsec = 244244244;
 
   start_node();
 }
@@ -288,6 +288,7 @@ Event Manager::to_next_event() {
     // epoll_wait or something else blocking
     waitpid(child, &status, 0);
     if (WIFSTOPPED(status)) {
+      increment_vtime(0, 1000);
       if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_SECCOMP << 8))) {
         // check if it's one of the syscalls we want to handle
         int my_syscall =
@@ -593,12 +594,9 @@ void Manager::handle_gettimeofday() {
       exit(1);
     }
 
-    struct timeval old_tv, new_tv;
-    _read_from_proc(child, (char *)&old_tv, (char *)regs.rdi,
-                    sizeof(struct timeval));
-    new_tv.tv_usec = old_tv.tv_usec + (offset.tv_nsec / i1e3);
-    new_tv.tv_sec = old_tv.tv_sec + offset.tv_sec + (new_tv.tv_usec / i1e6);
-    new_tv.tv_usec %= i1e6;
+    struct timeval new_tv;
+    new_tv.tv_sec = vtime.tv_sec;
+    new_tv.tv_usec = vtime.tv_nsec / i1e3;
     printf("[FILTER] writing {sec: %ld, usec: %ld} as time\n", new_tv.tv_sec,
            new_tv.tv_usec);
     _write_to_proc(child, (char *)&new_tv, (char *)regs.rdi,
@@ -616,20 +614,14 @@ void Manager::handle_clock_gettime() {
     struct user_regs_struct regs;
     ptrace(PTRACE_GETREGS, child, 0, &regs);
     if (regs.rax != 0) {
-      fprintf(stderr, "[FILTER] gettimeofday failed\n");
+      fprintf(stderr, "[FILTER] clock_gettime failed\n");
       exit(1);
     }
 
-    struct timespec old_tp, new_tp;
-    _read_from_proc(child, (char *)&old_tp, (char *)regs.rsi,
-                    sizeof(struct timeval));
-    new_tp.tv_nsec = old_tp.tv_nsec + offset.tv_nsec;
-    new_tp.tv_sec = old_tp.tv_sec + offset.tv_sec + (new_tp.tv_nsec / i1e9);
-    new_tp.tv_nsec %= i1e9;
-    printf("[FILTER] writing {sec: %ld, nsec: %ld} as time\n", new_tp.tv_sec,
-           new_tp.tv_nsec);
-    _write_to_proc(child, (char *)&new_tp, (char *)regs.rsi,
-                   sizeof(struct timeval));
+    printf("[FILTER] writing {sec: %ld, nsec: %ld} as time\n", vtime.tv_sec,
+           vtime.tv_nsec);
+    _write_to_proc(child, (char *)&vtime, (char *)regs.rsi,
+                   sizeof(struct timespec));
   }
 }
 
@@ -685,17 +677,19 @@ void Manager::handle_poll() {
     int retval = regs.rax;
     if (retval == 0) {
       // no updates to polling, which means the program waited the entire time.
-      // increment offset to deal with it
-      printf("[FILTER] no results. updating offset\n");
-      offset.tv_nsec += old_timeout.tv_nsec;
-      offset.tv_sec += old_timeout.tv_sec + (offset.tv_nsec / i1e9);
-      offset.tv_nsec %= i1e9;
+      printf("[FILTER] no results. updating vtime\n");
+      increment_vtime(old_timeout.tv_sec, old_timeout.tv_nsec);
     } else {
-      // updates to polling. just don't increment offset?
-      // TODO - see if we should increment the offset
-      printf("[FILTER] found results. no updates to offset\n");
+      // there were updates. just don't increment offset?
+      printf("[FILTER] found results. no additional updates to vtime\n");
     }
   }
+}
+
+void Manager::increment_vtime(long sec, long nsec) {
+  vtime.tv_nsec += nsec;
+  vtime.tv_sec += sec + (vtime.tv_nsec / i1e9);
+  vtime.tv_nsec %= i1e9;
 }
 
 } // namespace Filter

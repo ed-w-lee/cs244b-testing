@@ -69,9 +69,9 @@ private:
   // the command being run by the manager for starting the node
   std::vector<std::string> command;
 
-  // for managing virtual clocks. we use highest granularity duration to
-  // generalize across different polling syscalls
-  struct timespec offset;
+  // current time for the process. mainly to prevent orchestrator runtime
+  // variance from changing child behavior
+  struct timespec vtime;
 
   // pid of the node (if it's running)
   pid_t child;
@@ -112,18 +112,13 @@ private:
   void handle_open(bool at);
   void handle_fsync();
 
-  // TODO - make sure we handle non-synchronous reads / writes
-  // void handle_read();
-  // void handle_write();
-
   void handle_socket(); // only track AF_INET, SOCK_STREAM, IPPROTO_IP addresses
                         // (hard to say if this is actually needed)
   void handle_bind();   // redirect bind to some other addr
   void handle_getsockname(); // redirect back to original addr
-  // void handle_accept();
   void handle_connect();
-  // void handle_send();
-  // void handle_recv();
+
+  void increment_vtime(long sec, long nsec);
 };
 
 } // namespace Filter
