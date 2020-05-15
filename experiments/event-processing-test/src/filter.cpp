@@ -170,7 +170,6 @@ void Manager::start_node() {
       char blah[200];
       strcpy(blah, "/tmp/filter_");
       strcat(blah, command[1].c_str());
-      fprintf(stderr, "[FILTER] create output file: %s\n", blah);
       int file = open(blah, O_WRONLY | O_CREAT | O_APPEND, 0644);
       dup2(file, STDOUT_FILENO);
     }
@@ -275,21 +274,20 @@ void Manager::stop_node() {
 Event Manager::to_next_event() {
   if (child_state == ST_DEAD)
     return EV_DEAD;
-  else if (child_state == ST_WAITING_FSYNC)
-    handle_fsync();
   else if (child_state == ST_POLLING)
     handle_poll();
+  else if (child_state != ST_STOPPED) {
+    fprintf(stderr, "[FILTER] child in unexpected state\n");
+    exit(1);
+  }
 
   int status;
   while (1) {
     ptrace(PTRACE_CONT, child, 0, 0);
-    child_state = ST_RUNNING;
-    // TODO - figure out how to do this so we don't get stuck waiting for an
-    // epoll_wait or something else blocking
     waitpid(child, &status, 0);
     if (WIFSTOPPED(status)) {
-      increment_vtime(0, 1000);
       if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_SECCOMP << 8))) {
+        increment_vtime(0, 1000);
         // check if it's one of the syscalls we want to handle
         int my_syscall =
             ptrace(PTRACE_PEEKUSER, child, sizeof(long) * ORIG_RAX, 0);
@@ -335,9 +333,11 @@ Event Manager::to_next_event() {
         case SYS_getsockname:
           handle_getsockname();
           continue;
+        case SYS_connect:
         case SYS_sendto:
-          printf("[FILTER] handling sendto\n");
-          return EV_SENDTO;
+          printf("[FILTER] about to handle network event\n");
+          child_state = ST_NETWORK;
+          return EV_NETWORK;
         default:
           continue;
         }
@@ -348,13 +348,53 @@ Event Manager::to_next_event() {
       printf("[FILTER] exited\n");
       child_state = ST_DEAD;
       return EV_EXIT;
+    } else {
+      fprintf(stderr, "[FILTER] unexpected waitpid status\n");
+      exit(1);
     }
   }
-} // namespace Filter
+}
+
+int Manager::allow_event(Event ev) {
+  child_state = ST_STOPPED;
+  switch (ev) {
+  case EV_SYNCFS: {
+    handle_fsync();
+    return 0;
+  }
+  case EV_NETWORK: {
+    int status;
+    ptrace(PTRACE_SYSCALL, child, 0, 0);
+    waitpid(child, &status, 0);
+    if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+      int my_syscall =
+          (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * ORIG_RAX, 0);
+      uint64_t ret =
+          (uint64_t)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RAX, 0);
+      if (my_syscall == SYS_connect && (int)ret < 0) {
+        return -1;
+      } else if (my_syscall == SYS_sendto) {
+        printf("[FILTER] sendto returned: %ld\n", ret);
+        if ((ssize_t)ret < 0) {
+          return -1;
+        }
+      } else {
+        fprintf(stderr, "[FILTER] unhandled syscall\n");
+      }
+    }
+    return 0;
+  }
+  default:
+    fprintf(stderr, "[FILTER] invalid event to allow\n");
+    exit(1);
+  }
+  return -1;
+}
 
 void Manager::backup_file(std::string path) {
   if (strncmp(path.c_str(), prefix.c_str(), prefix.size()) != 0) {
-    fprintf(stderr, "attempting to backup file: %s without correct prefix\n",
+    fprintf(stderr,
+            "[FILTER] attempting to backup file: %s without correct prefix\n",
             path.c_str());
     return;
   }
@@ -512,7 +552,7 @@ void Manager::handle_bind() {
     my_new_addr.sin_addr.s_addr = new_addr.sin_addr.s_addr;
     my_new_addr.sin_port = curr_addr.sin_port;
     my_new_addr.sin_family = AF_INET;
-    printf("[FILTER] writing my_new_addr %s:%d to proc for %d\n",
+    printf("[FILTER] writing %s:%d to proc for %d\n",
            inet_ntoa(my_new_addr.sin_addr), ntohs(my_new_addr.sin_port),
            sockfd);
     _write_to_proc(child, (char *)&my_new_addr, (char *)sockaddr_ptr,
@@ -524,8 +564,6 @@ void Manager::handle_bind() {
     ptrace(PTRACE_SYSCALL, child, 0, 0);
     waitpid(child, &status, 0);
     if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
-      printf("[FILTER] overwriting %s:%d to proc\n",
-             inet_ntoa(curr_addr.sin_addr), ntohs(curr_addr.sin_port));
       _write_to_proc(child, (char *)&curr_addr, (char *)sockaddr_ptr,
                      sizeof(sockaddr_in));
     }

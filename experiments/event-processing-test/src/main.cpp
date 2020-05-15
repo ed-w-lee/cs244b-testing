@@ -38,12 +38,12 @@
 using namespace Filter;
 
 int main(int argc, char **argv) {
-  if (argc < 2) {
-    fprintf(stderr, "Usage: %s <prog> <arg1> ... <argN>\n", argv[0]);
+  if (argc < 3) {
+    fprintf(stderr, "Usage: %s <seed> <prog> <arg1> ... <argN>\n", argv[0]);
     return 1;
   }
 
-  std::string str_seed = "David Mazieres";
+  std::string str_seed(argv[1]);
   std::seed_seq seed(str_seed.begin(), str_seed.end());
   std::mt19937 rng(seed);
 
@@ -66,11 +66,44 @@ int main(int argc, char **argv) {
   newaddrs[1].sin_addr.s_addr = inet_addr("127.0.0.20");
   newaddrs[2].sin_addr.s_addr = inet_addr("127.0.0.30");
 
+  std::vector<sockaddr_in> newaddrs_vec;
+  std::vector<sockaddr_in> oldaddrs_vec;
+  for (int i = 0; i < NUM_NODES; i++) {
+    newaddrs_vec.push_back(newaddrs[i]);
+    oldaddrs_vec.push_back(oldaddrs[i]);
+  }
+
+  Proxy proxy(newaddrs_vec, oldaddrs_vec);
+  // // FIXME temporary for testing proxy
+  // {
+  //   while (true) {
+  //     printf("polling\n");
+  //     proxy.poll_for_events(true);
+  //     printf("get fds\n");
+  //     auto send_fds = proxy.get_fds_with_msgs(0);
+  //     if (send_fds.size()) {
+  //       proxy.print_state();
+  //     }
+  //     printf("send\n");
+  //     for (const auto &x : send_fds) {
+  //       proxy.allow_next_msg(x);
+  //     }
+  //     send_fds = proxy.get_fds_with_msgs(3);
+  //     if (send_fds.size()) {
+  //       proxy.print_state();
+  //     }
+  //     printf("send\n");
+  //     for (const auto &x : send_fds) {
+  //       proxy.allow_next_msg(x);
+  //     }
+  //   }
+  // }
+
   std::vector<Manager> managers;
   std::set<int> waiting_nodes;
   for (int i = 0; i < NUM_NODES; i++) {
     std::vector<std::string> command;
-    command.push_back(std::string(argv[1]));
+    command.push_back(std::string(argv[2]));
     command.push_back(std::to_string(i));
 
     std::string node_addr(inet_ntoa(oldaddrs[i].sin_addr));
@@ -79,33 +112,17 @@ int main(int argc, char **argv) {
 
     managers.push_back(Filter::Manager(command, oldaddrs[i], newaddrs[i],
                                        rafted_prefix, false));
+    waiting_nodes.insert(i);
     // // FIXME temporary for testing virtual clock stuff
-    // waiting_nodes.insert(i);
     // while (managers[i].to_next_event() != EV_EXIT)
     //   ;
     // exit(1);
   }
 
-  std::vector<sockaddr_in> newaddrs_vec;
-  std::vector<sockaddr_in> oldaddrs_vec;
-  for (int i = 0; i < NUM_NODES; i++) {
-    newaddrs_vec.push_back(newaddrs[i]);
-    oldaddrs_vec.push_back(oldaddrs[i]);
-  }
-
-  std::vector<Proxy> proxies;
-  for (int i = 0; i < NUM_NODES; i++) {
-    Proxy proxy(oldaddrs[i], newaddrs[i], newaddrs_vec, oldaddrs_vec);
-    proxies.push_back(proxy);
-  }
-
-  std::ofstream orch_log("/tmp/orch_log.txt", std::ios_base::trunc);
-
   unsigned long long cnt = 0;
   unsigned long long it = 0;
-  bool to_send[NUM_NODES] = {false};
   bool has_sent = false;
-  while (it++ < 2000) {
+  while (true) {
     int node_idx;
     if (waiting_nodes.size() > 0) {
       int waiting_idx = rng() % waiting_nodes.size();
@@ -117,70 +134,61 @@ int main(int argc, char **argv) {
       node_idx = (cnt++) % NUM_NODES;
       printf("[ORCH] Progressing %d\n", node_idx);
     }
-    orch_log << node_idx << "/" << waiting_nodes.size() << std::endl;
 
+    printf("[ORCH] has_sent: %s\n", has_sent ? "true" : "false");
     if (has_sent) {
-      // try add more consistency to network messages by waiting if a network
-      // message was sent
-      // TODO probably just make the poll blocking if we know a msg was sent
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      proxy.poll_for_events(true);
       has_sent = false;
     }
-    for (auto &proxy : proxies) {
-      auto &q = proxy.get_msgs();
-      std::vector<int> send_fds;
-      send_fds.reserve(q.size());
-      for (const auto &pair : q) {
-        send_fds.push_back(pair.first);
-      }
-      printf("q_size: %lu send_fds: [", q.size());
-      for (const auto &x : send_fds) {
-        printf("%d,", x);
-      }
-      printf("]\n");
 
+    {
+      auto send_fds = proxy.get_fds_with_msgs(node_idx);
+      proxy.print_state();
+      printf("[ORCH] Found %lu fds with waiting messages\n", send_fds.size());
+      int count = 0;
       for (const auto &x : send_fds) {
-        if (q.at(x).size() > 0) {
-          proxy.print_state();
-          if (rng() % 2 == 0) {
-            proxy.allow_next_msg(x);
-          }
-        }
+        // if (rng() % 2 == 0) {
+        if (proxy.allow_next_msg(x))
+          count++;
+        count++;
+        // }
       }
+      std::this_thread::sleep_for(std::chrono::milliseconds(count * 50));
     }
 
     auto &manager = managers[node_idx];
     bool to_continue;
     do {
       to_continue = false;
-      if (to_send[node_idx]) {
-        has_sent = true;
-        to_send[node_idx] = false;
-      }
-      switch (manager.to_next_event()) {
-      case Filter::EV_SENDTO:
-      case Filter::EV_SYNCFS: {
-        orch_log << "waiting" << std::endl;
+      Filter::Event ev = manager.to_next_event();
+      switch (ev) {
+      case Filter::EV_NETWORK:
+      case Filter::EV_SYNCFS:
         waiting_nodes.insert(node_idx);
-        to_send[node_idx] = true;
-        int x = rng();
-        if (x % 100 == 0) {
-          orch_log << "kill" << std::endl;
+        if (rng() % 100 == 0) {
           printf("[ORCH STATE] Toggled node - %d\n", node_idx);
           manager.toggle_node();
-          proxies[node_idx].toggle_node();
+          proxy.toggle_node(node_idx);
+          has_sent = false;
+        } else {
+          int res = manager.allow_event(ev);
+          if (ev == EV_NETWORK) {
+            if (res < 0) {
+              printf("[ORCH] Send failed\n");
+            } else {
+              has_sent = true;
+            }
+          }
         }
         break;
-      }
       case Filter::EV_DEAD: {
-        orch_log << "dead" << std::endl;
         waiting_nodes.erase(node_idx);
         int x = rng();
         if (x % 10 == 0) {
-          orch_log << "revive" << std::endl;
           printf("[ORCH STATE] Toggled node - %d\n", node_idx);
+          fprintf(stderr, "Revived node - %d\n", node_idx);
           manager.toggle_node();
-          proxies[node_idx].toggle_node();
+          proxy.toggle_node(node_idx);
           to_continue = true;
         }
         break;
@@ -196,4 +204,6 @@ int main(int argc, char **argv) {
       }
     } while (to_continue);
   }
+
+  printf("[ORCH] finished successfully\n");
 }

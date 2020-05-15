@@ -9,6 +9,7 @@
 #include <syscall.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <deque>
 #include <unordered_map>
 #include <vector>
@@ -34,81 +35,121 @@ void _set_reuseaddr(int fd) {
     fprintf(stderr, "[PROXY] REUSEADDR failed: %s\n", strerror(errno));
     exit(1);
   }
+  // if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(int)) < 0) {
+  //   fprintf(stderr, "[PROXY] REUSEPORT failed: %s\n", strerror(errno));
+  //   exit(1);
+  // }
+  struct linger lin;
+  lin.l_onoff = 0;
+  lin.l_linger = 0;
+  if (setsockopt(fd, SOL_SOCKET, SO_LINGER, &lin, sizeof(struct linger)) < 0) {
+    fprintf(stderr, "[PROXY] LINGER failed: %s\n", strerror(errno));
+    exit(1);
+  }
 }
 
 } // namespace
 
-Proxy::Proxy(sockaddr_in my_addr, sockaddr_in node_addr,
-             std::vector<sockaddr_in> actual_node_map,
+Proxy::Proxy(std::vector<sockaddr_in> actual_node_map,
              std::vector<sockaddr_in> proxy_node_map)
-    : node_alive(true), node_addr(node_addr), actual_node_map(actual_node_map),
-      proxy_node_map(proxy_node_map) {
+    : actual_node_map(actual_node_map), proxy_node_map(proxy_node_map) {
   printf("[PROXY] initialize\n");
+
+  sockfds.reserve(actual_node_map.size());
+  inbound_fds.reserve(actual_node_map.size() + 1);
 
   efd = epoll_create1(EPOLL_CLOEXEC);
 
-  sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
-  if (bind(sockfd, (const sockaddr *)&my_addr, sizeof(sockaddr_in)) < 0) {
+  for (size_t i = 0; i < actual_node_map.size(); i++) {
+    int sockfd = create_listen(i);
+    sockfds.push_back(sockfd);
+
+    node_alive.push_back(true);
+    inbound_fds.push_back(std::unordered_set<int>());
+  }
+  inbound_fds.push_back(std::unordered_set<int>());
+}
+
+void Proxy::toggle_node(int idx) {
+  if (node_alive[idx]) {
+    poll_for_events(false);
+    stop_node(idx);
+  } else {
+    node_alive[idx] = true;
+    int sockfd = create_listen(idx);
+    sockfds[idx] = sockfd;
+  }
+}
+
+int Proxy::create_listen(int idx) {
+  int sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+  if (sockfd < 0) {
+    fprintf(stderr, "[PROXY] socket failed: %s\n", strerror(errno));
+    exit(1);
+  }
+  printf("[PROXY] creating listening sockfd: %d\n", sockfd);
+  _set_nonblocking(sockfd);
+  _set_reuseaddr(sockfd);
+  if (bind(sockfd, (const sockaddr *)&proxy_node_map[idx],
+           sizeof(sockaddr_in)) < 0) {
     fprintf(stderr, "[PROXY] bind failed: %s\n", strerror(errno));
     exit(1);
   }
-
-  _set_nonblocking(sockfd);
-  _set_reuseaddr(sockfd);
   if (listen(sockfd, 100) < 0) {
     fprintf(stderr, "[PROXY] listen failed: %s\n", strerror(errno));
   }
 
-  // // we don't care about the port for when we're connecting as a proxy node
-  // for (auto &&proxy_node : proxy_node_map) {
-  //   proxy_node.sin_port = htons(0);
-  // }
-
   register_fd(sockfd);
+  return sockfd;
 }
 
-void Proxy::toggle_node() {
-  if (node_alive) {
-    stop_node();
-  } else {
-    node_alive = true;
-  }
-}
-
-void Proxy::stop_node() {
-  std::unordered_set<int> tmpfds(inbound_fds.begin(), inbound_fds.end());
+void Proxy::stop_node(int idx) {
+  std::unordered_set<int> tmpfds(inbound_fds[idx].begin(),
+                                 inbound_fds[idx].end());
   for (int fd : tmpfds) {
     unregister_fd(fd);
   }
-  node_alive = false;
+  node_alive[idx] = false;
+  epoll_ctl(efd, EPOLL_CTL_DEL, sockfds[idx], nullptr);
+  printf("[PROXY] closing listen fd %d for: %d\n", sockfds[idx], idx);
+  close(sockfds[idx]);
+  sockfds[idx] = -1;
 }
 
-const std::unordered_map<int, std::deque<std::vector<char>>> &
-Proxy::get_msgs() {
-  // find all messages currently available
-  while (poll_for_events())
-    ;
-  return waiting_msgs;
+std::vector<int> Proxy::get_fds_with_msgs(int idx) {
+  std::vector<int> to_ret;
+  for (int fd : inbound_fds[idx]) {
+    if (waiting_msgs[fd].size() > 0) {
+      to_ret.push_back(fd);
+    }
+  }
+  return to_ret;
 }
 
-void Proxy::allow_next_msg(int fd) {
+bool Proxy::allow_next_msg(int fd) {
   printf("[PROXY] sending next message for fd: %d\n", fd);
   auto got = waiting_msgs.find(fd);
   if (got == waiting_msgs.end()) {
-    printf("[PROXY] no messages for fd: %d can be sent\n", fd);
+    printf("[PROXY] could not find fd %d in waiting_msgs\n", fd);
   } else {
     std::vector<char> mesg = got->second.front();
     got->second.pop_front();
     size_t msg_len = mesg.size();
     // TODO - think about partial sends
     if (sendto(got->first, &mesg[0], msg_len, 0, nullptr, 0) < (int)msg_len) {
-      fprintf(stderr, "[PROXY] couldn't send everything at once\n");
+      fprintf(stderr, "[PROXY] couldn't send everything or send failed\n");
       exit(1);
     }
     if (got->second.empty() && related_fd[fd] < 0) {
-      unregister_fd(fd);
+      // if the client has closed, then we should close the connection with the
+      // node
+      // FIXME may not be unregistering fd right. there's still a chance
+      // connection doesn't get reset
+      shutdown(fd, SHUT_RDWR);
+      return true;
     }
   }
+  return false;
 }
 
 void Proxy::register_fd(int fd) {
@@ -132,36 +173,52 @@ void Proxy::unregister_fd(int fd) {
   printf("[PROXY] unregistering %d\n", fd);
   epoll_ctl(efd, EPOLL_CTL_DEL, fd, nullptr);
   close(fd);
-  if (inbound_fds.find(fd) != inbound_fds.end()) {
-    inbound_fds.erase(fd);
-  }
-  if (fd_to_node.find(fd) != fd_to_node.end()) {
+  auto it = fd_to_node.find(fd);
+  if (it != fd_to_node.end()) {
+    int idx = it->second;
+    if (inbound_fds[idx].find(fd) != inbound_fds[idx].end()) {
+      inbound_fds[idx].erase(fd);
+    }
     fd_to_node.erase(fd);
   }
   waiting_msgs.erase(fd);
   // unlink related fds
-  printf("[PROXY] relatedfd[%d]=%d\n", fd, related_fd[fd]);
-  if (related_fd[fd] >= 0) {
-    int other_fd = related_fd[fd];
-    related_fd[other_fd] = -1;
+  if (related_fd.find(fd) != related_fd.end()) {
+    printf("[PROXY] relatedfd[%d]=%d\n", fd, related_fd[fd]);
+    if (related_fd[fd] >= 0) {
+      int other_fd = related_fd[fd];
+      related_fd[other_fd] = -1;
 
-    if (waiting_msgs[other_fd].empty()) {
-      unregister_fd(other_fd);
+      if (waiting_msgs[other_fd].empty()) {
+        shutdown(other_fd, SHUT_RDWR);
+      }
     }
+    related_fd.erase(fd);
   }
-  related_fd.erase(fd);
 }
 
-bool Proxy::poll_for_events() {
+bool Proxy::poll_for_events(bool blocking) {
   const size_t NUM_EVENTS = 100;
   const size_t MAX_BUF = 2000;
   struct epoll_event evs[NUM_EVENTS];
   bool something_occurred = false;
 
-  int num_events = epoll_wait(efd, (epoll_event *)&evs, NUM_EVENTS, 0);
+  int num_events =
+      epoll_wait(efd, (epoll_event *)&evs, NUM_EVENTS, blocking ? -1 : 0);
+  printf("[PROXY] found %d events\n", num_events);
   for (int i = 0; i < num_events; i++) {
     if (evs[i].events & EPOLLIN) {
-      if ((int)evs[i].data.u32 == sockfd) {
+      printf("[PROXY] input event\n");
+      const auto &it =
+          std::find(sockfds.begin(), sockfds.end(), (int)evs[i].data.u32);
+      if (it != sockfds.end()) {
+        printf("[PROXY] new node connection\n");
+        int my_idx = std::distance(sockfds.begin(), it);
+        if (!node_alive[my_idx] || *it == -1) {
+          fprintf(stderr, "[PROXY] node is not alive, sockfd: %d\n", *it);
+          continue;
+        }
+        int sockfd = *it;
         int idx = 0, fromfd, peerfd;
         bool found;
         {
@@ -174,11 +231,7 @@ bool Proxy::poll_for_events() {
             fprintf(stderr, "[PROXY] accept failed: %s\n", strerror(errno));
             exit(1);
           }
-          if (!node_alive) {
-            close(fromfd);
-            continue;
-          }
-          printf("[PROXY] accepted connection from: %s:%d\n",
+          printf("[PROXY] accepted connection for %d from: %s:%d\n", my_idx,
                  inet_ntoa(new_conn.sin_addr), ntohs(new_conn.sin_port));
           // register new node if peer
           found = false;
@@ -187,11 +240,12 @@ bool Proxy::poll_for_events() {
             if (addr.sin_addr.s_addr == new_conn.sin_addr.s_addr) {
               printf("[PROXY] found node at %d\n", idx);
               found = true;
-              fd_to_node[fromfd] = idx;
               break;
             }
             idx++;
           }
+          fd_to_node[fromfd] = idx;
+          inbound_fds[idx].insert(fromfd);
           _set_nonblocking(fromfd);
           _set_reuseaddr(fromfd);
           register_fd(fromfd);
@@ -212,10 +266,11 @@ bool Proxy::poll_for_events() {
               exit(1);
             }
           }
-          if (connect(peerfd, (const sockaddr *)&node_addr,
+          if (connect(peerfd, (const sockaddr *)&actual_node_map[my_idx],
                       sizeof(sockaddr_in)) < 0) {
             fprintf(stderr, "[PROXY] connect to %s failed: %s\n",
-                    inet_ntoa(node_addr.sin_addr), strerror(errno));
+                    inet_ntoa(actual_node_map[my_idx].sin_addr),
+                    strerror(errno));
             close(peerfd);
             unregister_fd(fromfd);
             continue;
@@ -224,16 +279,20 @@ bool Proxy::poll_for_events() {
           _set_reuseaddr(peerfd);
           register_fd(peerfd);
           waiting_msgs[peerfd] = std::deque<std::vector<char>>();
-          inbound_fds.insert(peerfd);
+          fd_to_node[peerfd] = my_idx;
+          inbound_fds[my_idx].insert(peerfd);
         }
 
         link_fds(peerfd, fromfd);
         something_occurred = true;
       } else {
+        printf("[PROXY] receiving message\n");
         int conn_fd = (int)evs[i].data.u32;
-        if (related_fd.find(conn_fd) == related_fd.end())
+        if (related_fd.find(conn_fd) == related_fd.end()) {
           // unregistered already, so just ignore it
+          printf("[PROXY] message received from unregistered fd\n");
           continue;
+        }
         char buf[MAX_BUF];
         ssize_t n_bytes =
             recvfrom(conn_fd, &buf, MAX_BUF - 1, 0, nullptr, nullptr);
@@ -274,13 +333,13 @@ bool Proxy::poll_for_events() {
 }
 
 void Proxy::print_state() {
-  printf("[PROXY STATE] %s state:\n", inet_ntoa(node_addr.sin_addr));
+  printf("[PROXY STATE] waiting_msgs:\n");
   for (auto &x : waiting_msgs) {
-    auto it = fd_to_node.find(x.first);
-    int node = it == fd_to_node.end() ? -1 : it->second;
+    int node =
+        fd_to_node.find(x.first) == fd_to_node.end() ? -1 : fd_to_node[x.first];
     printf("[PROXY STATE] fd %2d --> %2d: [", x.first, node);
     for (auto &v : x.second) {
-      printf("%c%c, ", v[0], v[1]); // hack to get a "hash" the message
+      printf("(%c%c, %lu), ", v[0], v[1], v.size());
     }
     printf("]\n");
   }

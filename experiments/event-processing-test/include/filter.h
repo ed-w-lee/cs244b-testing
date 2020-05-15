@@ -38,7 +38,7 @@ enum Event {
   EV_POLLING,
   EV_EXIT,
   EV_DEAD,
-  EV_SENDTO,
+  EV_NETWORK,
   EV_SYNCFS,
 };
 
@@ -46,8 +46,8 @@ enum State {
   ST_DEAD,
   ST_POLLING,
   ST_STOPPED,
-  ST_RUNNING,
   ST_WAITING_FSYNC,
+  ST_NETWORK,
 };
 
 class Manager {
@@ -56,6 +56,9 @@ public:
           sockaddr_in new_addr, std::string prefix, bool ignore_stdout);
 
   Event to_next_event();
+
+  // allow an event to occur. returns if the event succeeded or not.
+  int allow_event(Event ev);
 
   void sync_fs();
 
