@@ -42,9 +42,11 @@ public class VisitedTriTest {
                 "Host: localhost:14001\n\r" +
                 "Connection: keep-alive\n\r" +
                 "Content-Length: 52\n\r" +
-                "\n\r" +
-                "{\"qa\":\"as\",\"a\":\"1\",\"b\":\"1a\",\"z\":\"AA\",\"trid\":\"24003\"}";
-        String[] res = HttpDataProxy.parsePartTrId(ex1);
+                "\n\r";
+        String ex2 = "{\"qa\":\"as\",\"a\":\"1\",\"b\":\"1a\",\"z\":\"AA\",\"trid\":\"24003\"}";
+        String[] res = new String[2];
+        assertEquals(false, HttpDataProxy.parsePartTrId(ex1, res));
+        assertEquals(true, HttpDataProxy.parsePartTrId(ex2, res));
         assertEquals("/vote",res[0]);
         assertEquals("24003",res[1]);
     }
@@ -58,9 +60,11 @@ public class VisitedTriTest {
                 "Host: localhost:14001\r\n" +
                 "Connection: keep-alive\r\n" +
                 "Content-Length: 52\r\n" +
-                "\r\n" +
-                "{\"qa\":\"as\",\"a\":\"1\",\"b\":\"1a\",\"z\":\"AA\",\"trid\":\"24001\"}";
-        String[] res = HttpDataProxy.parsePartTrId(ex1);
+                "\r\n";
+        String ex2 = "{\"qa\":\"as\",\"a\":\"1\",\"b\":\"1a\",\"z\":\"AA\",\"trid\":\"24001\"}";
+        String[] res = new String[2];
+        assertEquals(false, HttpDataProxy.parsePartTrId(ex1, res));
+        assertEquals(true, HttpDataProxy.parsePartTrId(ex2, res));
         assertEquals("/apply",res[0]);
         assertEquals("24001",res[1]);
     }
@@ -73,10 +77,11 @@ public class VisitedTriTest {
                 "User-Agent: Java/1.8.0_211\n" +
                 "Host: localhost:14001\n" +
                 "Connection: keep-alive\n" +
-                "Content-Length: 52\n" +
-                "\n" +
-                "{\"qa\":\"as\",\"a\":\"1\",\"b\":\"1a\",\"z\":\"AA\",\"trid\":\"24003\"}";
-        String[] res = HttpDataProxy.parsePartTrId(ex1);
+                "Content-Length: 52\n";
+        String ex2 = "{\"qa\":\"as\",\"a\":\"1\",\"b\":\"1a\",\"z\":\"AA\",\"trid\":\"24003\"}";
+        String[] res = new String[2];
+        assertEquals(false, HttpDataProxy.parsePartTrId(ex1, res));
+        assertEquals(true, HttpDataProxy.parsePartTrId(ex2, res));
         assertEquals("/commit",res[0]);
         assertEquals("24003",res[1]);
     }

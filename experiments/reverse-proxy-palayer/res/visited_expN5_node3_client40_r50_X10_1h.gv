@@ -1,0 +1,27 @@
+digraph VISITED{
+	bgcolor=white;"/root" [fontname="Arial",color=deeppink,label="/root \n success:0 \n drop:0"];
+	"/root" -> "24001,/vote" [color=deeppink,fontname="Arial-Italic", fontsize=8];
+"24001,/vote" [fontname="Arial",color=deepskyblue,label="24001,/vote \n success:4137 \n drop:0"];
+	"24001,/vote" -> "24002,/vote" [color=deepskyblue,fontname="Arial-Italic", fontsize=8];
+	"24001,/vote" -> "24001,/abort" [color=deepskyblue,fontname="Arial-Italic", fontsize=8];
+"24001,/abort" [fontname="Arial",color=dimgray,label="24001,/abort \n success:98 \n drop:115"];
+	"24001,/abort" -> "24002,/abort" [color=dimgray,fontname="Arial-Italic", fontsize=8];
+"24002,/abort" [fontname="Arial",color=dimgrey,label="24002,/abort \n success:73 \n drop:73"];
+	"24002,/abort" -> "24003,/abort" [color=dimgrey,fontname="Arial-Italic", fontsize=8];
+"24003,/abort" [fontname="Arial",color=dodgerblue,label="24003,/abort \n success:73 \n drop:0"];
+"24002,/vote" [fontname="Arial",color=firebrick,label="24002,/vote \n success:68 \n drop:54"];
+	"24002,/vote" -> "24003,/vote" [color=firebrick,fontname="Arial-Italic", fontsize=8];
+"24003,/vote" [fontname="Arial",color=forestgreen,label="24003,/vote \n success:68 \n drop:53"];
+	"24003,/vote" -> "24001,/commit" [color=forestgreen,fontname="Arial-Italic", fontsize=8];
+"24001,/commit" [fontname="Arial",color=gainsboro,label="24001,/commit \n success:68 \n drop:53"];
+	"24001,/commit" -> "24002,/commit" [color=gainsboro,fontname="Arial-Italic", fontsize=8];
+"24002,/commit" [fontname="Arial",color=gold,label="24002,/commit \n success:68 \n drop:53"];
+	"24002,/commit" -> "24003,/commit" [color=gold,fontname="Arial-Italic", fontsize=8];
+"24003,/commit" [fontname="Arial",color=goldenrod,label="24003,/commit \n success:68 \n drop:52"];
+	"24003,/commit" -> "24001,/apply" [color=goldenrod,fontname="Arial-Italic", fontsize=8];
+"24001,/apply" [fontname="Arial",color=gray,label="24001,/apply \n success:68 \n drop:52"];
+	"24001,/apply" -> "24002,/apply" [color=gray,fontname="Arial-Italic", fontsize=8];
+"24002,/apply" [fontname="Arial",color=grey,label="24002,/apply \n success:68 \n drop:52"];
+	"24002,/apply" -> "24003,/apply" [color=grey,fontname="Arial-Italic", fontsize=8];
+"24003,/apply" [fontname="Arial",color=green,label="24003,/apply \n success:68 \n drop:0"];
+}
