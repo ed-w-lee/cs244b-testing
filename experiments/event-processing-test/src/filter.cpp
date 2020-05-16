@@ -136,10 +136,12 @@ namespace Filter {
 
 const std::string Manager::suffix = ".__bk";
 
-Manager::Manager(std::vector<std::string> command, sockaddr_in old_addr,
-                 sockaddr_in new_addr, std::string prefix, bool ignore_stdout)
-    : command(command), ignore_stdout(ignore_stdout), prefix(prefix),
-      old_addr(old_addr), new_addr(new_addr), fds(), sockfds() {
+Manager::Manager(int my_idx, std::vector<std::string> command,
+                 sockaddr_in old_addr, sockaddr_in new_addr, FdMap &fdmap,
+                 std::string prefix, bool ignore_stdout)
+    : my_idx(my_idx), command(command), ignore_stdout(ignore_stdout),
+      fdmap(fdmap), prefix(prefix), old_addr(old_addr), new_addr(new_addr),
+      fds(), sockfds() {
   printf("[FILTER] creating with command: %s %s\n", command[0].c_str(),
          command[1].c_str());
 
@@ -269,6 +271,7 @@ void Manager::stop_node() {
   }
   fds.clear();
   sockfds.clear();
+  fdmap.clear_nodefds(my_idx);
 }
 
 Event Manager::to_next_event() {
@@ -333,11 +336,18 @@ Event Manager::to_next_event() {
         case SYS_getsockname:
           handle_getsockname();
           continue;
+        case SYS_accept4:
+        case SYS_accept:
+          handle_accept();
+          continue;
         case SYS_connect:
-        case SYS_sendto:
-          printf("[FILTER] about to handle network event\n");
+          printf("[FILTER] about to handle connect\n");
           child_state = ST_NETWORK;
-          return EV_NETWORK;
+          return EV_CONNECT;
+        case SYS_sendto:
+          printf("[FILTER] about to handle sendto\n");
+          child_state = ST_NETWORK;
+          return EV_SENDTO;
         default:
           continue;
         }
@@ -362,27 +372,43 @@ int Manager::allow_event(Event ev) {
     handle_fsync();
     return 0;
   }
-  case EV_NETWORK: {
+  case EV_CONNECT: {
     int status;
     ptrace(PTRACE_SYSCALL, child, 0, 0);
     waitpid(child, &status, 0);
     if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
-      int my_syscall =
-          (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * ORIG_RAX, 0);
-      uint64_t ret =
-          (uint64_t)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RAX, 0);
-      if (my_syscall == SYS_connect && (int)ret < 0) {
+      int ret = (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RAX, 0);
+      if ((int)ret < 0) {
         return -1;
-      } else if (my_syscall == SYS_sendto) {
-        printf("[FILTER] sendto returned: %ld\n", ret);
-        if ((ssize_t)ret < 0) {
-          return -1;
-        }
       } else {
-        fprintf(stderr, "[FILTER] unhandled syscall\n");
+        int connfd = (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RDI, 0);
+        fdmap.node_connect_fd(my_idx, connfd);
+        return 0;
       }
     }
     return 0;
+  }
+  case EV_SENDTO: {
+    int status;
+    ptrace(PTRACE_SYSCALL, child, 0, 0);
+    waitpid(child, &status, 0);
+    if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+      struct user_regs_struct regs;
+      ptrace(PTRACE_GETREGS, child, 0, &regs);
+      int sendfd = (int)regs.rdi;
+      if (fdmap.is_nodefd_alive(my_idx, sendfd)) {
+        printf("[FILTER] connection is still alive. allow sendto\n");
+        return (int)regs.rax;
+      } else {
+        // proxy already closed. we should close this fd
+        printf("[FILTER] connection is dead. inject failure\n");
+        regs.rax = -((long)ECONNRESET);
+        ptrace(PTRACE_SETREGS, child, 0, &regs);
+        return -1;
+      }
+    }
+    fprintf(stderr, "[FILTER] did not get subsequent syscall\n");
+    exit(1);
   }
   default:
     fprintf(stderr, "[FILTER] invalid event to allow\n");
@@ -608,6 +634,28 @@ void Manager::handle_getsockname() {
            ntohs(addr_to_overwrite.sin_port));
     _write_to_proc(child, (char *)&addr_to_overwrite, (char *)sockaddr_ptr,
                    sizeof(sockaddr_in));
+  }
+}
+
+void Manager::handle_accept() {
+  printf("[FILTER] handling accept\n");
+  int status;
+  ptrace(PTRACE_SYSCALL, child, 0, 0);
+  waitpid(child, &status, 0);
+  if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+    struct user_regs_struct regs;
+    ptrace(PTRACE_GETREGS, child, 0, &regs);
+
+    if ((int)regs.rax >= 0) {
+      sockaddr_in from_addr;
+      _read_from_proc(child, (char *)&from_addr, (char *)regs.rsi,
+                      sizeof(sockaddr_in));
+
+      printf("[FILTER] accept from %s:%d on %d\n",
+             inet_ntoa(from_addr.sin_addr), ntohs(from_addr.sin_port),
+             (int)regs.rax);
+      fdmap.node_accept_fd(my_idx, (int)regs.rax, from_addr);
+    }
   }
 }
 

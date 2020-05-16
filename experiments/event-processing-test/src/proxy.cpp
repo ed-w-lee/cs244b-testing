@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "proxy.h"
+#include "fdmap.h"
 
 namespace {
 void _set_nonblocking(int fd) {
@@ -50,9 +51,9 @@ void _set_reuseaddr(int fd) {
 
 } // namespace
 
-Proxy::Proxy(std::vector<sockaddr_in> actual_node_map,
+Proxy::Proxy(FdMap &fdmap, std::vector<sockaddr_in> actual_node_map,
              std::vector<sockaddr_in> proxy_node_map)
-    : actual_node_map(actual_node_map), proxy_node_map(proxy_node_map) {
+    : actual_node_map(actual_node_map), proxy_node_map(proxy_node_map), fdmap(fdmap) {
   printf("[PROXY] initialize\n");
 
   sockfds.reserve(actual_node_map.size());
@@ -143,9 +144,7 @@ bool Proxy::allow_next_msg(int fd) {
     if (got->second.empty() && related_fd[fd] < 0) {
       // if the client has closed, then we should close the connection with the
       // node
-      // FIXME may not be unregistering fd right. there's still a chance
-      // connection doesn't get reset
-      shutdown(fd, SHUT_RDWR);
+      unregister_fd(fd);
       return true;
     }
   }
@@ -171,6 +170,7 @@ void Proxy::link_fds(int fd1, int fd2) {
 
 void Proxy::unregister_fd(int fd) {
   printf("[PROXY] unregistering %d\n", fd);
+	fdmap.unregister_proxyfd(fd);
   epoll_ctl(efd, EPOLL_CTL_DEL, fd, nullptr);
   close(fd);
   auto it = fd_to_node.find(fd);
@@ -190,7 +190,7 @@ void Proxy::unregister_fd(int fd) {
       related_fd[other_fd] = -1;
 
       if (waiting_msgs[other_fd].empty()) {
-        shutdown(other_fd, SHUT_RDWR);
+        unregister_fd(other_fd);
       }
     }
     related_fd.erase(fd);
@@ -271,7 +271,6 @@ bool Proxy::poll_for_events(bool blocking) {
             fprintf(stderr, "[PROXY] connect to %s failed: %s\n",
                     inet_ntoa(actual_node_map[my_idx].sin_addr),
                     strerror(errno));
-            close(peerfd);
             unregister_fd(fromfd);
             continue;
           }
@@ -284,6 +283,13 @@ bool Proxy::poll_for_events(bool blocking) {
         }
 
         link_fds(peerfd, fromfd);
+				if (found) {
+					sockaddr_in my_addr;
+					socklen_t addrlen = sizeof(sockaddr_in);
+					getsockname(peerfd, (sockaddr *)&my_addr, &addrlen);
+					fdmap.proxy_accept_fd(fromfd);
+					fdmap.proxy_connect_fd(my_idx, peerfd, my_addr);
+				}
         something_occurred = true;
       } else {
         printf("[PROXY] receiving message\n");

@@ -11,6 +11,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "fdmap.h"
+
 // This ensures requests going to the proxy's address go to the node's address.
 // The proxy will be the one establishing connections to the node on behalf of
 // any request.
@@ -18,7 +20,7 @@
 // It reports what messages are in-flight
 class Proxy {
 public:
-  Proxy(std::vector<sockaddr_in> actual_node_map,
+  Proxy(FdMap &fdmap, std::vector<sockaddr_in> actual_node_map,
         std::vector<sockaddr_in> proxy_node_map);
 
   // starts or stops the given node
@@ -50,6 +52,8 @@ private:
   std::vector<sockaddr_in> actual_node_map;
   // address for each of the proxies
   std::vector<sockaddr_in> proxy_node_map;
+
+  FdMap &fdmap;
 
   // all inbound fds for a given destination node
   std::vector<std::unordered_set<int>> inbound_fds;

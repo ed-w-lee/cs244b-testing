@@ -7,10 +7,10 @@ HDR_DIR = include
 
 CXXFLAGS += -g -Wall -Wextra -DDEBUG -std=c++14 -I$(HDR_DIR)
 
-all: orch testprog
+all: orch
 
-orch: $(SRC_DIR)/main.cpp filter.o proxy.o
-	$(CXX) $(LDFLAGS) $(CXXFLAGS) -o $@ $(SRC_DIR)/main.cpp -lm filter.o proxy.o
+orch: $(SRC_DIR)/main.cpp filter.o proxy.o fdmap.o
+	$(CXX) $(LDFLAGS) $(CXXFLAGS) -o $@ $(SRC_DIR)/main.cpp -lm filter.o proxy.o fdmap.o
 
 filter.o: $(HDR_DIR)/filter.h $(SRC_DIR)/filter.cpp
 	$(CXX) $(CXXFLAGS) -O -c $(SRC_DIR)/filter.cpp
@@ -18,11 +18,14 @@ filter.o: $(HDR_DIR)/filter.h $(SRC_DIR)/filter.cpp
 proxy.o: $(HDR_DIR)/proxy.h $(SRC_DIR)/proxy.cpp
 	$(CXX) $(CXXFLAGS) -O -c $(SRC_DIR)/proxy.cpp
 
+fdmap.o: $(HDR_DIR)/fdmap.h $(SRC_DIR)/fdmap.cpp
+	$(CXX) $(CXXFLAGS) -O -c $(SRC_DIR)/fdmap.cpp
+
 testprog: $(TEST_DIR)/test.c
 	$(CXX) -o $@ $<
 
 clean:
-	rm -f orch filter.o proxy.o testprog
+	rm -f orch filter.o proxy.o fdmap.o testprog
 
 cleantest:
 	rm -f /tmp/orch_log.txt

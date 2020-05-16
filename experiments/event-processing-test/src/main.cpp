@@ -32,6 +32,7 @@
 #include <thread>
 #include <vector>
 
+#include "fdmap.h"
 #include "filter.h"
 #include "proxy.h"
 
@@ -73,7 +74,9 @@ int main(int argc, char **argv) {
     oldaddrs_vec.push_back(oldaddrs[i]);
   }
 
-  Proxy proxy(newaddrs_vec, oldaddrs_vec);
+  FdMap fdmap(NUM_NODES);
+
+  Proxy proxy(fdmap, newaddrs_vec, oldaddrs_vec);
   // // FIXME temporary for testing proxy
   // {
   //   while (true) {
@@ -110,8 +113,8 @@ int main(int argc, char **argv) {
     std::string rafted_prefix("/tmp/rafted_tcpmvp_");
     rafted_prefix.append(node_addr);
 
-    managers.push_back(Filter::Manager(command, oldaddrs[i], newaddrs[i],
-                                       rafted_prefix, false));
+    managers.push_back(Filter::Manager(i, command, oldaddrs[i], newaddrs[i],
+                                       fdmap, rafted_prefix, false));
     waiting_nodes.insert(i);
     // // FIXME temporary for testing virtual clock stuff
     // while (managers[i].to_next_event() != EV_EXIT)
@@ -162,19 +165,20 @@ int main(int argc, char **argv) {
       to_continue = false;
       Filter::Event ev = manager.to_next_event();
       switch (ev) {
-      case Filter::EV_NETWORK:
+      case Filter::EV_CONNECT:
+      case Filter::EV_SENDTO:
       case Filter::EV_SYNCFS:
         waiting_nodes.insert(node_idx);
         if (rng() % 100 == 0) {
           printf("[ORCH STATE] Toggled node - %d\n", node_idx);
-          manager.toggle_node();
           proxy.toggle_node(node_idx);
+          manager.toggle_node();
           has_sent = false;
         } else {
           int res = manager.allow_event(ev);
-          if (ev == EV_NETWORK) {
+          if (ev == Filter::EV_CONNECT || ev == Filter::EV_SENDTO) {
             if (res < 0) {
-              printf("[ORCH] Send failed\n");
+              printf("[ORCH] Send/connect failed\n");
             } else {
               has_sent = true;
             }
