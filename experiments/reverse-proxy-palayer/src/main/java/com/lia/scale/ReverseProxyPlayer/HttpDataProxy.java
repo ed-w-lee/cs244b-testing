@@ -70,7 +70,7 @@ public class HttpDataProxy extends Thread  {
                         String[] parsedComTrId = null;
                         while ((bytes_read = inFromClient.read(request)) != -1){
                             String requestString = new String(request,0, bytes_read);
-                            //System.out.printf("REQUEST:%d: %s\n", threadId, requestString);
+                            System.out.printf("REQUEST:%d: %s\n", threadId, requestString);
                             //REQUEST:11: GET /2pc
                             //REQUEST:11: PUT /2pc HTTP/1.1
                             //REQUEST:13: {"a":"1","trid":"24001"}
