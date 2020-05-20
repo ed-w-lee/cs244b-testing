@@ -1,7 +1,10 @@
 package com.lia.scale.ReverseProxyPlayer;
 
+import com.lia.scale.ReverseProxyPlayer.LocalLogCabin.LogCabin.Protocol.Raft;
+
 import java.io.*;
 import java.net.Socket;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
@@ -69,8 +72,14 @@ public class HttpDataProxy extends Thread  {
                     try {
                         String[] parsedComTrId = null;
                         while ((bytes_read = inFromClient.read(request)) != -1){
-                            String requestString = new String(request,0, bytes_read);
-                            //System.out.printf("REQUEST:%d: %s\n", threadId, requestString);
+                            /*try{
+                                byte[] raftMessBytes = Arrays.copyOfRange(request,0,bytes_read);
+                                Raft.Entry raftMessage = Raft.Entry.parseFrom(raftMessBytes);
+                                System.out.printf("RAFT message:%s\n", raftMessage.toString());
+                            } catch (Exception e) {
+                                String requestString = new String(request,0, bytes_read);
+                                System.out.printf("RAFT message fail parse:%d: %s\n", threadId, requestString);
+                            }*/
                             //REQUEST:11: GET /2pc
                             //REQUEST:11: PUT /2pc HTTP/1.1
                             //REQUEST:13: {"a":"1","trid":"24001"}
@@ -79,6 +88,12 @@ public class HttpDataProxy extends Thread  {
                             //REQUEST:13: PUT /apply HTTP/1.1
 
                             int sleepFromVisited = 0;
+                            String requestString = new String(request,0, bytes_read);
+                            if ( visitedMode.equals(VISITED_RND) ){
+                                sleepFromVisited = randomGenerator.nextInt(timeLimit);
+                                byte[] message64bytes = Arrays.copyOfRange(request,0, bytes_read > 64 ? 64 : bytes_read);
+                                System.out.printf("REQUEST:%d: port: %d delay: %d %s\n", threadId, serverPort, sleepFromVisited, Arrays.toString(message64bytes));
+                            }
                             String com = "";
                             String trid = "";
                             String part = "";
@@ -92,9 +107,7 @@ public class HttpDataProxy extends Thread  {
 
                                 part = String.format("%d,%s", serverPort, com);
                                 //String part = com;
-                                if ( visitedMode.equals(VISITED_RND) ){
-                                    sleepFromVisited = randomGenerator.nextInt(timeLimit);
-                                } else if ( visitedMode.equals(VISITED_EXP) ){
+                                if ( visitedMode.equals(VISITED_EXP) ){
                                     sleepFromVisited = VisitedTri.add(part);
                                     sleepFromVisited *= sleepFromVisited;
                                 } else if ( visitedMode.equals(VISITED_TREE) ){
