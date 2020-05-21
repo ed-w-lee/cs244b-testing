@@ -192,17 +192,15 @@ Event ClientManager::to_next_event() {
           continue;
         case SYS_shutdown: // we aren't *really* accounting for shutdown
         case SYS_close: {
-          child_state = ST_NETWORK;
-          printf("[CLIENT] handling close\n");
-          child_state = ST_STOPPED;
-
           struct user_regs_struct regs;
           ptrace(PTRACE_GETREGS, child, 0, &regs);
           int fd = regs.rdi;
 
           if (sockfds.find(fd) != sockfds.end()) {
+            child_state = ST_NETWORK;
             return EV_CLOSE;
           } else {
+            child_state = ST_STOPPED;
             continue;
           }
         }
@@ -286,6 +284,8 @@ bool ClientManager::handle_close() {
   int status;
   ptrace(PTRACE_SYSCALL, child, 0, 0);
   waitpid(child, &status, 0);
+  child_state = ST_STOPPED;
+
   if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
     int fd = (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RDI, 0);
     printf("[CLIENT] closed sockfd: %d\n", fd);

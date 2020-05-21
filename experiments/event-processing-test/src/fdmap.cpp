@@ -109,11 +109,18 @@ void FdMap::node_accept_fd(int node, int nodefd, struct sockaddr_in nodeaddr) {
 void FdMap::unregister_proxyfd(int proxyfd) {
   if (proxyfd_to_nodefd.find(proxyfd) != proxyfd_to_nodefd.end()) {
     auto pair = proxyfd_to_nodefd[proxyfd];
-    nodefd_to_proxyfd.erase(key(pair.first, pair.second));
     proxyfd_to_nodefd.erase(proxyfd);
-    dead_nodefds[pair.first].insert(pair.second);
-    printf("[FDMAP] unregistered %d, which moved (%d,%d) to dead\n", proxyfd,
-           pair.first, pair.second);
+    auto my_key = key(pair.first, pair.second);
+    if (nodefd_to_proxyfd.find(my_key) != nodefd_to_proxyfd.end() &&
+        nodefd_to_proxyfd[my_key] == proxyfd) {
+      nodefd_to_proxyfd.erase(key(pair.first, pair.second));
+      dead_nodefds[pair.first].insert(pair.second);
+      printf("[FDMAP] unregistered %d, moved (%d,%d) to dead\n", proxyfd,
+             pair.first, pair.second);
+    } else {
+      printf("[FDMAP] unregistered %d, did not move (%d,%d) to dead\n", proxyfd,
+             pair.first, pair.second);
+    }
   }
 }
 
