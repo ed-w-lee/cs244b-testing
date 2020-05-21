@@ -4,6 +4,8 @@ import com.lia.scale.ReverseProxyPlayer.LocalLogCabin.LogCabin.Protocol.Raft;
 
 import java.io.*;
 import java.net.Socket;
+import java.time.Duration;
+import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
@@ -14,12 +16,14 @@ import java.util.regex.Pattern;
 
 public class HttpDataProxy extends Thread  {
 
+    public static final String VISITED_NO = "no";
     public static final String VISITED_RND = "rnd";
     public static final String VISITED_EXP = "exp";
     public static final String VISITED_TREE = "tree";
 
     public static final String[] STATE_FINAL_LIST = new String[]{"/apply","/abort"};
 
+    private static ZonedDateTime startDateTime = ZonedDateTime.now();
     private static Pattern patternHTTP_COM = Pattern.compile(".*PUT (/\\w+).*", Pattern.DOTALL);
     private static Pattern patternHTTP_TRID = Pattern.compile(".*trid\":\"(\\w+)\".*", Pattern.DOTALL);
     private Socket sClient;
@@ -30,6 +34,7 @@ public class HttpDataProxy extends Thread  {
     private int timeLimit ;
     private int timeCrashTrashhold ;
     Map<String, String> params = null;
+
 
     HttpDataProxy(Socket sClient, String ServerUrl, int ServerPort, Map<String, String> params) {
         this.SERVER_URL = ServerUrl;
@@ -87,16 +92,30 @@ public class HttpDataProxy extends Thread  {
                             //REQUEST:13: PUT /commit HTTP/1.1
                             //REQUEST:13: PUT /apply HTTP/1.1
 
-                            int sleepFromVisited = 0;
+                            int[] sleepFromVisited = VisitedTri.EMPTY_RESPONSE;
                             String requestString = new String(request,0, bytes_read);
                             if ( visitedMode.equals(VISITED_RND) ){
-                                sleepFromVisited = randomGenerator.nextInt(timeLimit);
-                                byte[] message64bytes = Arrays.copyOfRange(request,0, bytes_read > 64 ? 64 : bytes_read);
-                                System.out.printf("REQUEST:%d: port: %d delay: %d %s\n", threadId, serverPort, sleepFromVisited, Arrays.toString(message64bytes));
+                                sleepFromVisited = VisitedTri.add(request,0, bytes_read);
+                                sleepFromVisited[1] = randomGenerator.nextInt(timeLimit);
+                            } else {
+                                //byte[] message32bytes = Arrays.copyOfRange(request,0, bytes_read > 32 ? 32 : bytes_read);
+                                //String resLocal = requestString.replace("\r\n"," ");
+                                //System.out.println(resLocal);
+                                //System.out.println(Arrays.toString(message32bytes));
+                                if (visitedMode.equals(VISITED_EXP)) {
+                                    sleepFromVisited = VisitedTri.add(request,0, bytes_read);
+                                    sleepFromVisited[1] *= sleepFromVisited[1];
+                                } else if (visitedMode.equals(VISITED_NO)) {
+                                    sleepFromVisited = VisitedTri.add(request,0, bytes_read);
+                                    sleepFromVisited[1] = 0;
+                                } else if ( visitedMode.equals(VISITED_TREE)){
+                                    // TODO: add tree visited logic
+                                }
                             }
                             String com = "";
                             String trid = "";
                             String part = "";
+/*TODO: need to make totally black box visited
                             if (parsedComTrId == null){
                                 parsedComTrId = new String[2];
                             }
@@ -114,26 +133,31 @@ public class HttpDataProxy extends Thread  {
                                     sleepFromVisited = VisitedTree.addSuccess(part, trid, true);
                                     sleepFromVisited *= sleepFromVisited;
                                 }
-                                System.out.printf("%d:%s,%d\n", serverPort, part, sleepFromVisited);
                             }
+
+ */
                             // TODO: respond to server/delay/skip?
 
-                            if (sleepFromVisited > timeCrashTrashhold){
+                            if (sleepFromVisited[1] > timeCrashTrashhold){
                                 //String part = String.format("%d,%s", serverPort, "internalcrash");
                                 if (visitedMode.equals(VISITED_EXP)) {
                                     part = "internalcrash";
-                                    sleepFromVisited = VisitedTri.add(part);
-                                    sleepFromVisited *= sleepFromVisited;
+                                    sleepFromVisited = VisitedTri.add(part.getBytes(), 0, part.length());
+                                    sleepFromVisited[1] *= sleepFromVisited[1];
                                 } else if ( visitedMode.equals(VISITED_TREE) && trid.length() > 0){
-                                    sleepFromVisited = VisitedTree.addSuccess(part, trid, false);
-                                    sleepFromVisited *= sleepFromVisited;
+                                    //sleepFromVisited = VisitedTree.addSuccess(part, trid, false);
+                                    sleepFromVisited[1] *= sleepFromVisited[1];
                                 }
-                                System.out.printf("%d:%s,%d\n", serverPort, part, sleepFromVisited);
-                                Thread.sleep(sleepFromVisited);
+                                Thread.sleep(sleepFromVisited[1]);
                                 outToServer.close();
                                 outToClient.close();
-                            } else if (sleepFromVisited > 0){
-                                Thread.sleep(sleepFromVisited);
+                            } else if (sleepFromVisited[1] > 0){
+                                Thread.sleep(sleepFromVisited[1]);
+                            }
+                            if (sleepFromVisited[0] >= 0){
+
+                                long minutesFromStart = Duration.between(startDateTime, ZonedDateTime.now()).toMinutes();
+                                System.out.printf("%d:%d:%d:%d\n", minutesFromStart, serverPort, sleepFromVisited[0], sleepFromVisited[1]);
                             }
                             outToServer.write(request, 0, bytes_read);
                             outToServer.flush();

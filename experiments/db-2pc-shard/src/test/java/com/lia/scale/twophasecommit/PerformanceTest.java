@@ -32,7 +32,7 @@ public class PerformanceTest {
 
         int numberOfUsers = 200;
 
-        int startID = 0, endID = 50;
+        int startID = 0, endID = 10000;
         String host = "localhost";
         String com = "/2pc";
         int startPort = 24001;
@@ -67,7 +67,7 @@ public class PerformanceTest {
         }
 
         boolean isActive = true;
-        int maxDeltaInMinutes = 60;
+        int maxDeltaInMinutes = 3*60;
         ZonedDateTime start = ZonedDateTime.now();
         while (isActive && Duration.between(start, ZonedDateTime.now()).toMinutes() < maxDeltaInMinutes){
             isActive = false;

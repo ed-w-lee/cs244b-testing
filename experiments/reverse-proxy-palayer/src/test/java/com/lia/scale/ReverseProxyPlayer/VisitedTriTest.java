@@ -70,6 +70,22 @@ public class VisitedTriTest {
     }
 
     @Test
+    public void testRegularMatchRepalce() {
+        String ex1 = "PUT /apply HTTP/1.1\r\n" +
+                "Content-Type: application/json; utf-8\r\n" +
+                "Accept: application/json\r\n" +
+                "User-Agent: Java/1.8.0_211\r\n" +
+                "Host: localhost:14001\r\n" +
+                "Connection: keep-alive\r\n" +
+                "Content-Length: 52\r\n" +
+                "\r\n";
+        String ex2 = ex1.replace("\r\n"," ");
+        String exBase = "PUT /apply HTTP/1.1 Content-Type: application/json; utf-8 Accept: application/json User-Agent: Java/1.8.0_211 Host: localhost:14001 Connection: keep-alive Content-Length: 52  ";
+        System.out.println(ex2);
+        assertEquals(exBase, ex2);
+    }
+
+    @Test
     public void testRegularMatchComTr2() {
         String ex1 = "PUT /commit HTTP/1.1\n" +
                 "Content-Type: application/json; utf-8\n" +
