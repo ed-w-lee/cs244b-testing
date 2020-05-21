@@ -250,8 +250,9 @@ int main(int argc, char **argv) {
         case Filter::EV_SYNCFS:
           proxy.set_alive(node_idx);
           waiting_nodes.insert(node_idx);
-          if (rng() % 10000 == 0) {
+          if (rng() % 1000 == 0) {
             printf("[ORCH STATE] Toggled node - %d\n", node_idx);
+            fprintf(stderr, "Killed node - %d\n", node_idx);
             proxy.toggle_node(node_idx);
             manager.toggle_node();
             has_sent = false;
@@ -269,7 +270,7 @@ int main(int argc, char **argv) {
         case Filter::EV_DEAD: {
           waiting_nodes.erase(node_idx);
           int x = rng();
-          if (x % 1000 == 0) {
+          if (x % 100 == 0) {
             printf("[ORCH STATE] Toggled node - %d\n", node_idx);
             fprintf(stderr, "Revived node - %d\n", node_idx);
             manager.toggle_node();
@@ -301,6 +302,7 @@ int main(int argc, char **argv) {
       case ClientFilter::EV_CONNECT:
       case ClientFilter::EV_SENDTO: {
         if (rng() % 100 == 0) {
+          fprintf(stderr, "Killed client - %d\n", node_idx);
           printf("[ORCH STATE] Toggled client - %d\n", node_idx);
           proxy.toggle_node(node_idx);
           client.toggle_client();
@@ -316,13 +318,11 @@ int main(int argc, char **argv) {
         break;
       }
       case ClientFilter::EV_DEAD: {
-        int x = rng();
-        if (x % 10 == 0) {
-          printf("[ORCH STATE] Toggled client - %d\n", node_idx);
-          fprintf(stderr, "Revived client - %d\n", node_idx);
-          proxy.toggle_node(node_idx);
-          client.toggle_client();
-        }
+        // just revive since client being dead doesn't really change anything
+        fprintf(stderr, "Revived client - %d\n", node_idx);
+        printf("[ORCH STATE] Toggled client - %d\n", node_idx);
+        proxy.toggle_node(node_idx);
+        client.toggle_client();
         break;
       }
       case ClientFilter::EV_RECVING: {

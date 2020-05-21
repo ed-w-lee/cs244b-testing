@@ -397,11 +397,12 @@ int Manager::allow_event(Event ev) {
       ptrace(PTRACE_GETREGS, child, 0, &regs);
       int sendfd = (int)regs.rdi;
       if (fdmap.is_nodefd_alive(my_idx, sendfd)) {
-        printf("[FILTER] connection is still alive. allow sendto\n");
+        printf("[FILTER] connection for %d is still alive. allow sendto\n",
+               sendfd);
         return (int)regs.rax;
       } else {
         // proxy already closed. we should close this fd
-        printf("[FILTER] connection is dead. inject failure\n");
+        printf("[FILTER] connection for %d is dead. inject failure\n", sendfd);
         regs.rax = -((long)ECONNRESET);
         ptrace(PTRACE_SETREGS, child, 0, &regs);
         return -1;
