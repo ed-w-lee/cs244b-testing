@@ -21,7 +21,9 @@
 class Proxy {
 public:
   Proxy(FdMap &fdmap, std::vector<sockaddr_in> actual_node_map,
-        std::vector<sockaddr_in> proxy_node_map);
+        std::vector<sockaddr_in> proxy_node_map, size_t num_clients);
+
+  void set_alive(int idx);
 
   // starts or stops the given node
   void toggle_node(int idx);
@@ -32,6 +34,9 @@ public:
   // retrieves all inbound fds for a given node that have waiting messages
   std::vector<int> get_fds_with_msgs(int idx);
 
+  // checks if fd has more to send
+  bool has_more(int fd);
+
   // send the next message waiting to be sent on the given fd. notifies
   // orchestrator if it should wait extra for closed connection
   bool allow_next_msg(int fd);
@@ -39,10 +44,8 @@ public:
   void print_state();
 
 private:
-  const int CLIENT_OFFS = 1000;
-
   // track if each node is alive
-  std::vector<bool> node_alive;
+  std::unordered_map<int, bool> node_alive;
 
   // epoll fd
   int efd;
@@ -56,7 +59,7 @@ private:
   FdMap &fdmap;
 
   // all inbound fds for a given destination node
-  std::vector<std::unordered_set<int>> inbound_fds;
+  std::unordered_map<int, std::unordered_set<int>> inbound_fds;
   // fd -> destination node idx
   std::unordered_map<int, int> fd_to_node;
   // fd -> proxied fd (2-way)

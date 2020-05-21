@@ -14,14 +14,30 @@
 #include <unordered_map>
 #include <vector>
 
+#include "client.h"
+
 #include "fdmap.h"
 
-FdMap::FdMap(size_t num_nodes)
+FdMap::FdMap(size_t num_nodes, size_t num_clients)
     : last_node(-1), last_nodefd(-1), nodefd_to_proxyfd(), proxyfd_to_nodefd() {
   for (size_t i = 0; i < num_nodes; i++) {
     connecting_proxyfds[i] = std::vector<std::pair<int, struct sockaddr_in>>();
     dead_nodefds[i] = std::unordered_set<int>();
   }
+  for (size_t i = 0; i < num_clients; i++) {
+    size_t idx = i + ClientFilter::CLIENT_OFFS;
+    connecting_proxyfds[idx] =
+        std::vector<std::pair<int, struct sockaddr_in>>();
+    dead_nodefds[idx] = std::unordered_set<int>();
+  }
+}
+
+int FdMap::get_last_node() { return last_node; }
+
+void FdMap::trash_last_node() {
+  dead_nodefds[last_node].insert(last_nodefd);
+  last_node = -1;
+  last_nodefd = -1;
 }
 
 void FdMap::node_connect_fd(int node, int fd) {
@@ -91,12 +107,14 @@ void FdMap::node_accept_fd(int node, int nodefd, struct sockaddr_in nodeaddr) {
 }
 
 void FdMap::unregister_proxyfd(int proxyfd) {
-  auto pair = proxyfd_to_nodefd[proxyfd];
-  nodefd_to_proxyfd.erase(key(pair.first, pair.second));
-  proxyfd_to_nodefd.erase(proxyfd);
-  dead_nodefds[pair.first].insert(pair.second);
-  printf("[FDMAP] unregistered %d, which moved (%d,%d) to dead\n", proxyfd,
-         pair.first, pair.second);
+  if (proxyfd_to_nodefd.find(proxyfd) != proxyfd_to_nodefd.end()) {
+    auto pair = proxyfd_to_nodefd[proxyfd];
+    nodefd_to_proxyfd.erase(key(pair.first, pair.second));
+    proxyfd_to_nodefd.erase(proxyfd);
+    dead_nodefds[pair.first].insert(pair.second);
+    printf("[FDMAP] unregistered %d, which moved (%d,%d) to dead\n", proxyfd,
+           pair.first, pair.second);
+  }
 }
 
 bool FdMap::is_nodefd_alive(int node, int nodefd) {

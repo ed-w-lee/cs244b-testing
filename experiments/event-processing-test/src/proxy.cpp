@@ -14,8 +14,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include "proxy.h"
+#include "client.h"
 #include "fdmap.h"
+#include "proxy.h"
 
 namespace {
 void _set_nonblocking(int fd) {
@@ -52,12 +53,12 @@ void _set_reuseaddr(int fd) {
 } // namespace
 
 Proxy::Proxy(FdMap &fdmap, std::vector<sockaddr_in> actual_node_map,
-             std::vector<sockaddr_in> proxy_node_map)
-    : actual_node_map(actual_node_map), proxy_node_map(proxy_node_map), fdmap(fdmap) {
+             std::vector<sockaddr_in> proxy_node_map, size_t num_clients)
+    : actual_node_map(actual_node_map), proxy_node_map(proxy_node_map),
+      fdmap(fdmap) {
   printf("[PROXY] initialize\n");
 
   sockfds.reserve(actual_node_map.size());
-  inbound_fds.reserve(actual_node_map.size() + 1);
 
   efd = epoll_create1(EPOLL_CLOEXEC);
 
@@ -65,11 +66,16 @@ Proxy::Proxy(FdMap &fdmap, std::vector<sockaddr_in> actual_node_map,
     int sockfd = create_listen(i);
     sockfds.push_back(sockfd);
 
-    node_alive.push_back(true);
-    inbound_fds.push_back(std::unordered_set<int>());
+    node_alive[i] = false;
+    inbound_fds[i] = std::unordered_set<int>();
   }
-  inbound_fds.push_back(std::unordered_set<int>());
+  for (size_t i = 0; i < num_clients; i++) {
+    inbound_fds[ClientFilter::CLIENT_OFFS + i] = std::unordered_set<int>();
+    node_alive[ClientFilter::CLIENT_OFFS + i] = false;
+  }
 }
+
+void Proxy::set_alive(int idx) { node_alive[idx] = true; }
 
 void Proxy::toggle_node(int idx) {
   if (node_alive[idx]) {
@@ -77,8 +83,10 @@ void Proxy::toggle_node(int idx) {
     stop_node(idx);
   } else {
     node_alive[idx] = true;
-    int sockfd = create_listen(idx);
-    sockfds[idx] = sockfd;
+		if (idx < ClientFilter::CLIENT_OFFS) {
+			int sockfd = create_listen(idx);
+			sockfds[idx] = sockfd;
+		}
   }
 }
 
@@ -111,10 +119,12 @@ void Proxy::stop_node(int idx) {
     unregister_fd(fd);
   }
   node_alive[idx] = false;
-  epoll_ctl(efd, EPOLL_CTL_DEL, sockfds[idx], nullptr);
-  printf("[PROXY] closing listen fd %d for: %d\n", sockfds[idx], idx);
-  close(sockfds[idx]);
-  sockfds[idx] = -1;
+  if (idx < ClientFilter::CLIENT_OFFS) {
+    epoll_ctl(efd, EPOLL_CTL_DEL, sockfds[idx], nullptr);
+    printf("[PROXY] closing listen fd %d for: %d\n", sockfds[idx], idx);
+    close(sockfds[idx]);
+    sockfds[idx] = -1;
+  }
 }
 
 std::vector<int> Proxy::get_fds_with_msgs(int idx) {
@@ -125,6 +135,15 @@ std::vector<int> Proxy::get_fds_with_msgs(int idx) {
     }
   }
   return to_ret;
+}
+
+bool Proxy::has_more(int fd) {
+  auto got = waiting_msgs.find(fd);
+  if (got == waiting_msgs.end()) {
+    return false;
+  } else {
+    return !got->second.empty();
+  }
 }
 
 bool Proxy::allow_next_msg(int fd) {
@@ -170,7 +189,7 @@ void Proxy::link_fds(int fd1, int fd2) {
 
 void Proxy::unregister_fd(int fd) {
   printf("[PROXY] unregistering %d\n", fd);
-	fdmap.unregister_proxyfd(fd);
+  fdmap.unregister_proxyfd(fd);
   epoll_ctl(efd, EPOLL_CTL_DEL, fd, nullptr);
   close(fd);
   auto it = fd_to_node.find(fd);
@@ -214,13 +233,10 @@ bool Proxy::poll_for_events(bool blocking) {
       if (it != sockfds.end()) {
         printf("[PROXY] new node connection\n");
         int my_idx = std::distance(sockfds.begin(), it);
-        if (!node_alive[my_idx] || *it == -1) {
-          fprintf(stderr, "[PROXY] node is not alive, sockfd: %d\n", *it);
-          continue;
-        }
         int sockfd = *it;
         int idx = 0, fromfd, peerfd;
         bool found;
+        sockaddr_in my_addr;
         {
           // can accept new connection
           sockaddr_in new_conn;
@@ -231,19 +247,23 @@ bool Proxy::poll_for_events(bool blocking) {
             fprintf(stderr, "[PROXY] accept failed: %s\n", strerror(errno));
             exit(1);
           }
+          // register new node if peer
           printf("[PROXY] accepted connection for %d from: %s:%d\n", my_idx,
                  inet_ntoa(new_conn.sin_addr), ntohs(new_conn.sin_port));
-          // register new node if peer
-          found = false;
-          for (auto &addr : actual_node_map) {
-            // TODO would be nice to handle own node
-            if (addr.sin_addr.s_addr == new_conn.sin_addr.s_addr) {
-              printf("[PROXY] found node at %d\n", idx);
-              found = true;
-              break;
-            }
-            idx++;
+
+          if (!node_alive[my_idx] || *it == -1) {
+            fprintf(stderr, "[PROXY] node is not alive, sockfd: %d\n", *it);
+            unregister_fd(fromfd);
+            fdmap.trash_last_node();
+            continue;
           }
+
+          idx = fdmap.get_last_node();
+          if (idx == -1) {
+            fprintf(stderr, "[PROXY] idx of last node invalid\n");
+            exit(1);
+          }
+          found = idx < ClientFilter::CLIENT_OFFS;
           fd_to_node[fromfd] = idx;
           inbound_fds[idx].insert(fromfd);
           _set_nonblocking(fromfd);
@@ -257,11 +277,25 @@ bool Proxy::poll_for_events(bool blocking) {
           peerfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
 
           if (found) {
-            sockaddr_in x = proxy_node_map[idx];
-            x.sin_port = htons(0);
+            my_addr = proxy_node_map[idx];
+            my_addr.sin_port = htons(0);
             printf("[PROXY] binding to proxy_node_map[%d]: %s:%d\n", idx,
-                   inet_ntoa(x.sin_addr), ntohs(x.sin_port));
-            if (bind(peerfd, (const sockaddr *)&x, sizeof(sockaddr_in)) < 0) {
+                   inet_ntoa(my_addr.sin_addr), ntohs(my_addr.sin_port));
+            if (bind(peerfd, (const sockaddr *)&my_addr, sizeof(sockaddr_in)) <
+                0) {
+              fprintf(stderr, "[PROXY] bind failed: %s\n", strerror(errno));
+              exit(1);
+            }
+          } else {
+            my_addr.sin_family = AF_INET;
+            my_addr.sin_port = htons(0);
+            if (inet_aton("127.0.0.1", &(my_addr.sin_addr)) <= 0) {
+              fprintf(stderr, "[PROXY] localhost inet_aton failed: %s\n",
+                      strerror(errno));
+              exit(1);
+            }
+            if (bind(peerfd, (const sockaddr *)&my_addr, sizeof(sockaddr_in)) <
+                0) {
               fprintf(stderr, "[PROXY] bind failed: %s\n", strerror(errno));
               exit(1);
             }
@@ -272,6 +306,7 @@ bool Proxy::poll_for_events(bool blocking) {
                     inet_ntoa(actual_node_map[my_idx].sin_addr),
                     strerror(errno));
             unregister_fd(fromfd);
+            fdmap.trash_last_node();
             continue;
           }
           _set_nonblocking(peerfd);
@@ -283,13 +318,12 @@ bool Proxy::poll_for_events(bool blocking) {
         }
 
         link_fds(peerfd, fromfd);
-				if (found) {
-					sockaddr_in my_addr;
-					socklen_t addrlen = sizeof(sockaddr_in);
-					getsockname(peerfd, (sockaddr *)&my_addr, &addrlen);
-					fdmap.proxy_accept_fd(fromfd);
-					fdmap.proxy_connect_fd(my_idx, peerfd, my_addr);
-				}
+
+        socklen_t addrlen = sizeof(sockaddr_in);
+        getsockname(peerfd, (sockaddr *)&my_addr, &addrlen);
+        fdmap.proxy_accept_fd(fromfd);
+        fdmap.proxy_connect_fd(my_idx, peerfd, my_addr);
+
         something_occurred = true;
       } else {
         printf("[PROXY] receiving message\n");
@@ -343,7 +377,7 @@ void Proxy::print_state() {
   for (auto &x : waiting_msgs) {
     int node =
         fd_to_node.find(x.first) == fd_to_node.end() ? -1 : fd_to_node[x.first];
-    printf("[PROXY STATE] fd %2d --> %2d: [", x.first, node);
+    printf("[PROXY STATE] fd %2d --> %4d: [", x.first, node);
     for (auto &v : x.second) {
       printf("(%c%c, %lu), ", v[0], v[1], v.size());
     }

@@ -71,8 +71,6 @@ public:
 
   void sync_file(int fd);
 
-  void receive_msg(int sockfd);
-
   void toggle_node();
 
 private:

@@ -22,7 +22,11 @@ inline int fd_from_key(size_t key) { return (int)key; }
 // It reports what messages are in-flight
 class FdMap {
 public:
-  FdMap(size_t num_nodes);
+  FdMap(size_t num_nodes, size_t num_clients);
+
+  int get_last_node();
+
+  void trash_last_node();
 
   void node_connect_fd(int node, int fd);
 
