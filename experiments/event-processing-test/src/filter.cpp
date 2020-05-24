@@ -171,7 +171,7 @@ void Manager::start_node() {
     } else {
       char blah[200];
       strcpy(blah, "/tmp/filter_");
-      strcat(blah, command[1].c_str());
+      strcat(blah, inet_ntoa(old_addr.sin_addr));
       int file = open(blah, O_WRONLY | O_CREAT | O_APPEND, 0644);
       dup2(file, STDOUT_FILENO);
     }
@@ -213,7 +213,10 @@ void Manager::start_node() {
       args[i] = command[i].c_str();
     }
     args[command.size()] = NULL;
-    printf("Executing %d with %s\n", getpid(), args[1]);
+    printf("Executing %d with \n", getpid());
+    for (size_t i = 0; i < command.size(); i++) {
+      printf("<%s> ", args[i]);
+    }
     exit(execv(args[0], (char **)args));
   }
 

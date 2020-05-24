@@ -40,7 +40,17 @@
 
 int main(int argc, char **argv) {
   if (argc < 3) {
-    fprintf(stderr, "Usage: %s <seed> <prog> <arg1> ... <argN>\n", argv[0]);
+    // too lazy to do proper arg parsing
+    // fprintf(stderr,
+    //         "Usage (ordering matters!): %s"
+    //         "--!mode (rand|replay) \t"
+    //         "--!seed <seed> \t"
+    //         "--!node <prog> <args> "
+    //         "--!client <client> <args>"
+    //         "--!old-addrs [<addr:port>]"
+    //         "--!new-addrs [<addr:port>]"
+    //         "\n",
+    //         argv[0]);
     return 1;
   }
 
@@ -108,11 +118,15 @@ int main(int argc, char **argv) {
   std::set<int> waiting_nodes;
   std::unordered_map<int, int> num_polls;
   for (int i = 0; i < NUM_NODES; i++) {
-    std::vector<std::string> command;
-    command.push_back(std::string(argv[2]));
-    command.push_back(std::to_string(i));
-
     std::string node_addr(inet_ntoa(oldaddrs[i].sin_addr));
+    std::vector<std::string> command = {std::string(argv[2]), "-a", node_addr,
+                                        "-o"};
+    for (int j = 0; j < NUM_NODES; j++) {
+      if (i != j) {
+        command.push_back(inet_ntoa(oldaddrs[j].sin_addr));
+      }
+    }
+
     std::string rafted_prefix("/tmp/rafted_tcpmvp_");
     rafted_prefix.append(node_addr);
 
