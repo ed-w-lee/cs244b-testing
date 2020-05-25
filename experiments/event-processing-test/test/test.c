@@ -8,4 +8,6 @@ int main(int argc, char *argv[]) {
     struct timespec tv;
     clock_gettime(CLOCK_MONOTONIC, &tv);
     printf("{sec: %ld, nsec: %ld}\n", tv.tv_sec, tv.tv_nsec);
+
+    rename("/tmp/test", "/tmp/test2");
 }

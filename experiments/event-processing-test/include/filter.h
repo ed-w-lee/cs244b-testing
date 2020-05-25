@@ -7,6 +7,10 @@
 #include <sys/types.h>
 #include <syscall.h>
 #include <time.h>
+
+#include <deque>
+#include <list>
+#include <map>
 #include <unordered_map>
 
 #include "fdmap.h"
@@ -22,6 +26,12 @@ const uint32_t syscalls_intercept[] = {
     // filesystem-related
     SYS_open,
     SYS_openat,
+    SYS_mknod,
+    SYS_mknodat,
+    SYS_creat,
+    SYS_write, // assume that network doesn't use write
+    SYS_rename,
+    SYS_renameat, // not handled due to scope
     SYS_syncfs,
     SYS_fsync,
     SYS_fdatasync,
@@ -46,13 +56,15 @@ enum Event {
   EV_CONNECT,
   EV_SENDTO,
   EV_SYNCFS,
+  EV_WRITE,
+  EV_RENAME,
 };
 
 enum State {
   ST_DEAD,
   ST_POLLING,
   ST_STOPPED,
-  ST_WAITING_FSYNC,
+  ST_FILES,
   ST_NETWORK,
 };
 
@@ -65,11 +77,11 @@ public:
   Event to_next_event();
 
   // allow an event to occur. returns metadata about the event's status
-  int allow_event(Event ev);
+  // has cmd for some arbitrary command for some event
+  int allow_event(Event ev, int cmd);
 
-  void sync_fs();
-
-  void sync_file(int fd);
+  void handle_fsync();
+  void handle_write();
 
   void toggle_node();
 
@@ -94,25 +106,39 @@ private:
 
   // mapping between proxy fds and node fds
   FdMap &fdmap;
-
-  // prefix of files in the file system that should be tracked with fsync
-  // (this isn't necessarily needed, but does make our life easier)
-  std::string prefix;
-
   // how to redirect addresses
   sockaddr_in old_addr, new_addr;
+  // socket file descriptors
+  // value: is_redirected
+  std::unordered_map<int, bool> sockfds;
 
-  // tracking filesystem and socket file descriptors
-  std::unordered_map<int, std::string> fds; // value: absolute path of file
-  std::unordered_map<int, bool> sockfds;    // value: is_redirected
-
+  // directory in the file system that should be tracked with fsync
+  // TODO (this isn't necessarily needed, but does make our life easier)
+  std::string prefix;
   // suffix to append to "properly fsynced" files
   static const std::string suffix;
+  // filesystem-related file descriptors
+  // value: current path
+  std::unordered_map<int, std::string> fds;
+  // current version of a file
+  std::unordered_map<std::string, int> file_vers;
+  // all pending op indexes for a given file
+  // file -> [pending op]
+  std::unordered_map<std::string, std::deque<size_t>> file_pending;
+  // set of files whose latest version is a src of a rename
+  std::unordered_set<std::string> rename_srcs;
+  size_t ops_done;
+  size_t op_count;
+  // rename ops (for happens-before relations)
+  // op idx -> ((src_file, src_version), (dst_file, dst_version))
+  std::map<size_t,
+           std::pair<std::pair<std::string, int>, std::pair<std::string, int>>>
+      pending_ops;
 
   void start_node();
   void stop_node();
 
-  void backup_file(std::string path);
+  void backup_file(int fd);
   void restore_files();
 
   // should set timeout to 0
@@ -123,13 +149,19 @@ private:
   void handle_clock_gettime();
 
   void handle_open(bool at);
-  void handle_fsync();
+  void handle_mknod(int arg);
+  int handle_rename();
+  void perform_next_op();
+  std::string get_backup_filename(std::string file, int version);
+  std::pair<std::string, int> find_root(std::string file, int version);
 
   void handle_socket(); // only track AF_INET, SOCK_STREAM, IPPROTO_IP addresses
                         // (hard to say if this is actually needed)
   void handle_bind();   // redirect bind to some other addr
   void handle_getsockname(); // redirect back to original addr
   void handle_accept();
+  int handle_connect();
+  int handle_sendto();
 
   void increment_vtime(long sec, long nsec);
 };

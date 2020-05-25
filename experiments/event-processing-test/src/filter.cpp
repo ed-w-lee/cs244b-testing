@@ -130,6 +130,56 @@ void _write_to_proc(pid_t child, char *to_write, char *addr, size_t len) {
   }
 }
 
+bool _startswith(std::string str, std::string prefix) {
+  return str.length() >= prefix.length() &&
+         strncmp(str.c_str(), prefix.c_str(), prefix.length()) == 0;
+}
+
+bool _endswith(std::string str, std::string suffix) {
+  return (str.length() >= suffix.length() &&
+          str.compare(str.length() - suffix.length(), suffix.length(),
+                      suffix) != 0);
+}
+
+bool _exists(std::string file) {
+  struct stat buf;
+  if (stat(file.c_str(), &buf) < 0) {
+    if (errno == ENOENT) {
+      return false;
+    } else {
+      fprintf(stderr, "[FILTER] failed to stat %s due to %s\n", file.c_str(),
+              strerror(errno));
+      exit(1);
+    }
+  }
+  return true;
+}
+
+void _remove_dir(const char *path) {
+  struct dirent *entry = NULL;
+  DIR *dir = NULL;
+  if ((dir = opendir(path))) {
+    while ((entry = readdir(dir))) {
+      DIR *sub_dir = NULL;
+      FILE *file = NULL;
+      char abs_path[PATH_MAX] = {0};
+      if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+        sprintf(abs_path, "%s/%s", path, entry->d_name);
+        if ((sub_dir = opendir(abs_path))) {
+          closedir(sub_dir);
+          _remove_dir(abs_path);
+        } else {
+          if ((file = fopen(abs_path, "r"))) {
+            fclose(file);
+            remove(abs_path);
+          }
+        }
+      }
+    }
+  }
+  remove(path);
+}
+
 } // namespace
 
 namespace Filter {
@@ -140,10 +190,15 @@ Manager::Manager(int my_idx, std::vector<std::string> command,
                  sockaddr_in old_addr, sockaddr_in new_addr, FdMap &fdmap,
                  std::string prefix, bool ignore_stdout)
     : my_idx(my_idx), command(command), ignore_stdout(ignore_stdout),
-      fdmap(fdmap), prefix(prefix), old_addr(old_addr), new_addr(new_addr),
-      fds(), sockfds() {
-  printf("[FILTER] creating with command: %s %s\n", command[0].c_str(),
-         command[1].c_str());
+      fdmap(fdmap), old_addr(old_addr), new_addr(new_addr), prefix(prefix) {
+  printf("[FILTER] creating with command: ");
+  for (auto str : command) {
+    printf("%s ", str.c_str());
+  }
+  printf("\n");
+
+  // recursively clear anything in prefix
+  _remove_dir(prefix.c_str());
 
   vtime.tv_sec = 244244;
   vtime.tv_nsec = 244244244;
@@ -213,25 +268,31 @@ void Manager::start_node() {
       args[i] = command[i].c_str();
     }
     args[command.size()] = NULL;
-    printf("Executing %d with \n", getpid());
+    printf("Executing %d with ", getpid());
     for (size_t i = 0; i < command.size(); i++) {
       printf("<%s> ", args[i]);
     }
+    printf("\n");
     exit(execv(args[0], (char **)args));
   }
 
   child = pid;
 
-  int status;
+  int status = 0;
   waitpid(pid, &status, 0);
   ptrace(PTRACE_SETOPTIONS, pid, 0,
          PTRACE_O_TRACESECCOMP | PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACEEXEC);
 
-  ptrace(PTRACE_CONT, child, NULL, NULL);
-  waitpid(pid, &status, 0);
-  if (status >> 8 == (SIGTRAP | (PTRACE_EVENT_EXEC << 8))) {
+  {
     // disable vDSO to ensure we can intercept gettimeofday
     // reference: https://stackoverflow.com/a/52402306
+
+    // get to exec point
+    while (status >> 8 != (SIGTRAP | (PTRACE_EVENT_EXEC << 8))) {
+      ptrace(PTRACE_CONT, child, NULL, NULL);
+      waitpid(pid, &status, 0);
+    }
+    // before exec starts, we overwrite AT_SYSINFO_EHDR
     char todo[2000];
     long rsp = ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RSP, 0);
     size_t num_to_get = command.size() + 70;
@@ -269,11 +330,23 @@ void Manager::stop_node() {
   child = -1;
   child_state = ST_DEAD;
 
-  for (auto &tup : fds) {
-    backup_file(tup.second);
-  }
   fds.clear();
   sockfds.clear();
+  // delete any unnecessary files for GC
+  for (auto &op : pending_ops) {
+    auto src = op.second.first;
+    std::string try_delete = get_backup_filename(src.first, src.second);
+    if (_exists(try_delete)) {
+      unlink(try_delete.c_str());
+    }
+  }
+  // clear any operation-related structures
+  file_pending.clear();
+  ops_done = 0;
+  op_count = 0;
+  pending_ops.clear();
+  rename_srcs.clear();
+
   fdmap.clear_nodefds(my_idx);
 }
 
@@ -319,14 +392,39 @@ Event Manager::to_next_event() {
         case SYS_openat:
           handle_open(true);
           continue;
+        case SYS_creat:
+          // handle like open since pathname in same place and we're not
+          // thinking too deeply about mode right now
+          // TODO think a bit more deeply about mode?
         case SYS_open:
           handle_open(false);
           continue;
+        case SYS_mknod:
+          handle_mknod(1);
+          continue;
+        case SYS_mknodat:
+          handle_mknod(2);
+          continue;
+
+        case SYS_write:
+          child_state = ST_FILES;
+          return EV_WRITE;
+        case SYS_rename:
+          child_state = ST_FILES;
+          return EV_RENAME;
+        case SYS_renameat:
+          // TODO if time, handle renameat
+          fprintf(stderr, "unaccounted for renameat\n");
+          exit(1);
+          break;
         case SYS_syncfs:
+          // TODO if time, handle syncfs
+          fprintf(stderr, "unaccounted for syncfs\n");
+          exit(1);
+          break;
         case SYS_fdatasync:
         case SYS_fsync:
-          printf("[FILTER] about to fsync\n");
-          child_state = ST_WAITING_FSYNC;
+          child_state = ST_FILES;
           return EV_SYNCFS;
 
           // network-related
@@ -344,11 +442,9 @@ Event Manager::to_next_event() {
           handle_accept();
           continue;
         case SYS_connect:
-          printf("[FILTER] about to handle connect\n");
           child_state = ST_NETWORK;
           return EV_CONNECT;
         case SYS_sendto:
-          printf("[FILTER] about to handle sendto\n");
           child_state = ST_NETWORK;
           return EV_SENDTO;
         default:
@@ -368,51 +464,33 @@ Event Manager::to_next_event() {
   }
 }
 
-int Manager::allow_event(Event ev) {
+int Manager::allow_event(Event ev, int cmd) {
   child_state = ST_STOPPED;
   switch (ev) {
+    // TODO adjust for feedback from orch
+  case EV_WRITE: {
+    int status;
+    ptrace(PTRACE_SYSCALL, child, 0, 0);
+    waitpid(child, &status, 0);
+    // non-zero command causes fsync
+    if (cmd != 0) {
+      // conveniently, first arg of both write and fsync is the fd
+      handle_fsync();
+    }
+    return 0;
+  }
+  case EV_RENAME: {
+    return handle_rename();
+  }
   case EV_SYNCFS: {
     handle_fsync();
     return 0;
   }
   case EV_CONNECT: {
-    int status;
-    ptrace(PTRACE_SYSCALL, child, 0, 0);
-    waitpid(child, &status, 0);
-    if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
-      int ret = (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RAX, 0);
-      if ((int)ret < 0) {
-        return -1;
-      } else {
-        int connfd = (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RDI, 0);
-        fdmap.node_connect_fd(my_idx, connfd);
-        return 0;
-      }
-    }
-    return 0;
+    return handle_connect();
   }
   case EV_SENDTO: {
-    int status;
-    ptrace(PTRACE_SYSCALL, child, 0, 0);
-    waitpid(child, &status, 0);
-    if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
-      struct user_regs_struct regs;
-      ptrace(PTRACE_GETREGS, child, 0, &regs);
-      int sendfd = (int)regs.rdi;
-      if (fdmap.is_nodefd_alive(my_idx, sendfd)) {
-        printf("[FILTER] connection for %d is still alive. allow sendto\n",
-               sendfd);
-        return (int)regs.rax;
-      } else {
-        // proxy already closed. we should close this fd
-        printf("[FILTER] connection for %d is dead. inject failure\n", sendfd);
-        regs.rax = -((long)ECONNRESET);
-        ptrace(PTRACE_SETREGS, child, 0, &regs);
-        return -1;
-      }
-    }
-    fprintf(stderr, "[FILTER] did not get subsequent syscall\n");
-    exit(1);
+    return handle_sendto();
   }
   default:
     fprintf(stderr, "[FILTER] invalid event to allow\n");
@@ -421,22 +499,92 @@ int Manager::allow_event(Event ev) {
   return -1;
 }
 
-void Manager::backup_file(std::string path) {
-  if (strncmp(path.c_str(), prefix.c_str(), prefix.size()) != 0) {
-    fprintf(stderr,
-            "[FILTER] attempting to backup file: %s without correct prefix\n",
-            path.c_str());
-    return;
+void Manager::backup_file(int fd) {
+  std::string curr_loc = fds[fd];
+  printf("[FILTER] starting backup_file on %s\n", curr_loc.c_str());
+
+  struct stat s;
+  if (stat(curr_loc.c_str(), &s) == 0) {
+    if (s.st_mode & S_IFDIR) {
+      printf("[FILTER] backing up directory\n");
+      // perform rename ops until no more pending ops for any files in the dir
+      size_t last_rename = 0;
+      for (auto it = file_pending.begin(); it != file_pending.end(); it++) {
+        if (_startswith(it->first, curr_loc) &&
+            it->first.find('/', curr_loc.length() + 1) == it->first.npos) {
+          // direct child of dir, should perform all ops out of or into
+          if (it->second.back() > last_rename) {
+            last_rename = it->second.back();
+          }
+        }
+      }
+      while (ops_done < last_rename) {
+        perform_next_op();
+      }
+    } else if (s.st_mode & S_IFREG) {
+      // persist data based on dependencies
+      int curr_vers = file_vers[curr_loc];
+      std::string my_file = get_backup_filename(curr_loc, curr_vers);
+      bool has_root = false;
+      if (!_exists(my_file)) {
+        auto root = find_root(curr_loc, curr_vers);
+        if (curr_loc.compare(root.first) != 0 || curr_vers != root.second) {
+          has_root = true;
+          // we have a root, which means we should persist data at the root
+          // rather than at our filename (since the renames haven't happened
+          // yet)
+          std::string out_file = get_backup_filename(root.first, root.second);
+          printf("[FILTER] Found root for fsync. Copying %s to %s\n",
+                 curr_loc.c_str(), out_file.c_str());
+          std::ifstream src(curr_loc, std::ios::binary);
+          std::ofstream dst(out_file, std::ios::binary);
+          dst << src.rdbuf();
+        }
+      }
+      if (!has_root) {
+        // we don't have a root, so we should persist the file as the current
+        // version (we don't have to create a new version since we are now
+        // guaranteed that rename ops should be based off this version)
+        // TODO it's probably more correct to persist after all file changes,
+        // but it _should_ be fine due to versioning
+        std::string out_file = get_backup_filename(curr_loc, curr_vers);
+        printf("[FILTER] No root for fsync. Copying %s to %s\n",
+               curr_loc.c_str(), out_file.c_str());
+        std::ifstream src(curr_loc, std::ios::binary);
+        std::ofstream dst(out_file, std::ios::binary);
+        dst << src.rdbuf();
+      }
+    } else {
+      fprintf(stderr, "[FILTER] unexpected filetype of: %s\n",
+              curr_loc.c_str());
+      exit(1);
+    }
+  } else {
+    if (errno != ENOENT) {
+      fprintf(stderr, "[FILTER] unexpected stat failure %s due to %s\n",
+              curr_loc.c_str(), strerror(errno));
+      exit(1);
+    }
   }
-  std::string back_file(path);
-  back_file.append(suffix);
-  printf("[FILTER] Copying %s to %s\n", path.c_str(), back_file.c_str());
-  std::ifstream src(path, std::ios::binary);
-  std::ofstream dst(back_file, std::ios::binary);
-  dst << src.rdbuf();
+}
+
+std::pair<std::string, int> Manager::find_root(std::string file, int version) {
+  printf("[FILTER] starting find_root\n");
+  auto it = pending_ops.rbegin();
+  for (; it != pending_ops.rend(); it++) {
+    auto op = it->second;
+    auto src = op.first;
+    auto dst = op.second;
+    if (dst.first.compare(file) == 0 && version == dst.second) {
+      file = src.first;
+      version = src.second;
+    }
+  }
+  return {file, version};
 }
 
 void Manager::restore_files() {
+  printf("[FILTER] starting restore_files\n");
   // recursively iterate over any things
   std::queue<std::string> paths;
   paths.push(prefix);
@@ -447,9 +595,11 @@ void Manager::restore_files() {
     if (stat(path.c_str(), &s) == 0) {
       if (s.st_mode & S_IFDIR) {
         if (path[0] != '/') {
-          continue;
+          fprintf(stderr, "[FILTER] found relative path %s while restoring\n",
+                  path.c_str());
+          exit(1);
         }
-        // directory
+        // directory, recursively restore contents
         DIR *dir;
         struct dirent *ent;
         if ((dir = opendir(path.c_str())) != NULL) {
@@ -470,17 +620,18 @@ void Manager::restore_files() {
           exit(1);
         }
       } else if (s.st_mode & S_IFREG) {
-        // regular file
-        if (path.length() > suffix.length() &&
-            path.compare(path.length() - suffix.length(), suffix.length(),
-                         suffix) != 0) {
-          std::string back_file(path);
-          back_file.append(suffix);
-          printf("[FILTER] Copying %s to %s\n", back_file.c_str(),
-                 path.c_str());
-          std::ifstream src(back_file, std::ios::binary);
-          std::ofstream dst(path, std::ios::binary);
-          dst << src.rdbuf();
+        if (!_endswith(path, suffix)) {
+          // regular, non-backup file, attempt to restore from backup file
+          std::string back_file = get_backup_filename(path, file_vers[path]);
+          if (_exists(back_file)) {
+            printf("[FILTER] Copying %s to %s\n", back_file.c_str(),
+                   path.c_str());
+            std::ifstream src(back_file, std::ios::binary);
+            std::ofstream dst(path, std::ios::binary);
+            dst << src.rdbuf();
+          } else {
+            printf("[FILTER] %s not found, nop\n", back_file.c_str());
+          }
         }
       } else {
         fprintf(stderr, "[FILTER] unexpected filetype of: %s\n", path.c_str());
@@ -501,19 +652,164 @@ void Manager::handle_open(bool at) {
   int arg = at ? 2 : 1;
   _read_file(child, orig_file, arg);
   printf("[FILTER] handling open%s: %s\n", at ? "at" : "", orig_file);
+  std::string to_open(orig_file);
 
-  if (strncmp(prefix.c_str(), orig_file, strlen(prefix.c_str())) == 0) {
+  if (_startswith(to_open, prefix)) {
+    // store existence of file to check if it was created
+    bool exists = _exists(to_open);
     // get file descriptor for the opened file so we can register it
     int status;
     ptrace(PTRACE_SYSCALL, child, 0, 0);
     waitpid(child, &status, 0);
     if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
-      uint64_t fd =
-          (uint64_t)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RAX, 0);
-      printf("return val: %lu\n", fd);
-      fds[fd] = std::string(orig_file);
+      int fd = (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RAX, 0);
+      printf("return val: %d\n", fd);
+      if (fd >= 0) {
+        if (to_open[to_open.size() - 1] == '/') {
+          to_open = to_open.substr(0, to_open.size() - 1);
+        }
+        fds[fd] = to_open;
+        if (file_vers.find(to_open) == file_vers.end()) {
+          file_vers[to_open] = 0;
+        }
+        if (!exists) {
+          file_vers[to_open]++;
+        }
+      }
     }
   }
+}
+
+void Manager::handle_mknod(int arg) {
+  char orig_file[PATH_MAX];
+
+  _read_file(child, orig_file, arg);
+  printf("[FILTER] handling mknod: %s\n", orig_file);
+  std::string to_mknod(orig_file);
+
+  if (_startswith(to_mknod, prefix)) {
+    // get file descriptor for the opened file so we can register it
+    int status;
+    ptrace(PTRACE_SYSCALL, child, 0, 0);
+    waitpid(child, &status, 0);
+    if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+      uint64_t ret =
+          (uint64_t)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RAX, 0);
+      printf("return val: %lu\n", ret);
+      if (ret == 0) {
+        if (to_mknod[to_mknod.size() - 1] == '/') {
+          to_mknod = to_mknod.substr(0, to_mknod.size() - 1);
+        }
+        if (file_vers.find(to_mknod) == file_vers.end()) {
+          file_vers[to_mknod] = 0;
+        }
+        file_vers[to_mknod]++;
+      }
+    }
+  }
+}
+
+int Manager::handle_rename() {
+  printf("[FILTER] handling rename\n");
+
+  char src[PATH_MAX];
+  char dst[PATH_MAX];
+  _read_file(child, src, 1);
+  _read_file(child, dst, 1);
+  printf("[FILTER] renaming %s to %s\n", src, dst);
+  if (strncmp(prefix.c_str(), src, strlen(prefix.c_str())) == 0 &&
+      strncmp(prefix.c_str(), dst, strlen(prefix.c_str())) == 0) {
+    int status;
+    ptrace(PTRACE_SYSCALL, child, 0, 0);
+    waitpid(child, &status, 0);
+    if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+      uint64_t ret =
+          (uint64_t)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RAX, 0);
+      printf("[FILTER] return val: %lu\n", ret);
+      if (ret == 0) {
+        struct stat s;
+        if (stat(src, &s) != 0) {
+          fprintf(stderr, "stat failed on %s with %s\n", src, strerror(errno));
+          exit(1);
+        } else if ((s.st_mode & S_IFREG) == 0) {
+          // TODO Support directories for rename (ugh)
+          fprintf(stderr, "rename on directories not supported\n");
+          exit(1);
+        }
+        std::string src_str(src);
+        std::string dst_str(dst);
+        // register new rename op
+        // TODO can we somehow GC pending ops that don't matter anymore?
+        op_count++;
+        file_vers[dst_str]++;
+        pending_ops[op_count] = {{src_str, file_vers[dst_str]},
+                                 {dst_str, file_vers[dst_str]}};
+        if (file_pending.find(dst_str) == file_pending.end()) {
+          file_pending[dst_str] = {};
+        }
+        if (file_pending.find(src_str) == file_pending.end()) {
+          file_pending[src_str] = {};
+        }
+        file_pending[dst_str].push_back(op_count);
+        file_pending[src_str].push_back(op_count);
+        printf("[FILTER] registered new rename op %lu for (%s,%d) -> (%s,%d)\n",
+               op_count, src, file_vers[src_str], dst, file_vers[dst_str]);
+
+        // update current locations of any open fds
+        for (auto &tup : fds) {
+          if (tup.second.compare(src_str)) {
+            tup.second = dst_str;
+          }
+        }
+        file_vers[src_str]++;
+      }
+      return ret;
+    }
+    // should be unreachable
+    fprintf(stderr, "[FILTER] syscall continuation didn't work\n");
+    exit(1);
+    return -1;
+  } else {
+    fprintf(stderr, "[FILTER] rename on non-prefixed files, exiting\n");
+    exit(1);
+    return -1; // should be unreachable
+  }
+}
+
+void Manager::perform_next_op() {
+  auto it = pending_ops.begin();
+
+  auto op = it->second;
+  auto src = op.first;
+  std::string src_file = get_backup_filename(src.first, src.second);
+  auto dst = op.second;
+  std::string dst_file = get_backup_filename(dst.first, dst.second);
+  printf("[FILTER] performing op %lu (%s -> %s)\n", it->first, src_file.c_str(),
+         dst_file.c_str());
+  if (!_exists(src_file)) {
+    std::ofstream to_create(dst_file);
+  } else {
+    // file exists, move to new file
+    if (rename(src_file.c_str(), dst_file.c_str()) < 0) {
+      fprintf(stderr, "[FILTER] perform_next_op failed to rename due to %s\n",
+              strerror(errno));
+      exit(1);
+    }
+  }
+  if (file_pending[dst.first].front() != it->first) {
+    fprintf(stderr, "[FILTER] mismatching pending idx for dst: %lu vs. %lu\n",
+            file_pending[dst.first].front(), it->first);
+    exit(1);
+  }
+  if (file_pending[src.first].front() != it->first) {
+    fprintf(stderr, "[FILTER] mismatching pending idx for src: %lu vs. %lu\n",
+            file_pending[src.first].front(), it->first);
+    exit(1);
+  }
+  file_pending[dst.first].pop_front();
+  file_pending[src.first].pop_front();
+  ops_done = it->first;
+  pending_ops.erase(it);
 }
 
 void Manager::handle_fsync() {
@@ -523,14 +819,18 @@ void Manager::handle_fsync() {
 
   auto it = fds.find(fd);
   if (it != fds.end()) {
-    auto orig_file = it->second;
-    if (orig_file[0] != '/') {
-      fprintf(stderr, "relative path rip\n");
-      exit(1);
-    }
-
-    backup_file(orig_file);
+    backup_file(fd);
+  } else {
+    fprintf(stderr, "[FILTER] fsync called on fd not accounted fd %d\n", fd);
+    exit(1);
   }
+}
+
+std::string Manager::get_backup_filename(std::string file, int version) {
+  file.append(".");
+  file.append(std::to_string(version));
+  file.append(suffix);
+  return file;
 }
 
 void Manager::handle_socket() {
@@ -663,6 +963,48 @@ void Manager::handle_accept() {
   }
 }
 
+int Manager::handle_connect() {
+  int status;
+  ptrace(PTRACE_SYSCALL, child, 0, 0);
+  waitpid(child, &status, 0);
+  if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+    int ret = (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RAX, 0);
+    if ((int)ret < 0) {
+      return -1;
+    } else {
+      int connfd = (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RDI, 0);
+      fdmap.node_connect_fd(my_idx, connfd);
+      return 0;
+    }
+  }
+  return 0;
+}
+
+int Manager::handle_sendto() {
+  int status;
+  ptrace(PTRACE_SYSCALL, child, 0, 0);
+  waitpid(child, &status, 0);
+  if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+    struct user_regs_struct regs;
+    ptrace(PTRACE_GETREGS, child, 0, &regs);
+    int sendfd = (int)regs.rdi;
+    if (fdmap.is_nodefd_alive(my_idx, sendfd)) {
+      printf("[FILTER] connection for %d is still alive. allow sendto\n",
+             sendfd);
+      return (int)regs.rax;
+    } else {
+      // proxy already closed. we should close this fd
+      printf("[FILTER] connection for %d is dead. inject failure\n", sendfd);
+      regs.rax = -((long)ECONNRESET);
+      ptrace(PTRACE_SETREGS, child, 0, &regs);
+      return -1;
+    }
+  }
+  fprintf(stderr, "[FILTER] did not get subsequent syscall\n");
+  exit(1);
+  return -1;
+}
+
 const long long i1e3 = 1000;
 const long long i1e6 = 1000 * 1000;
 const long long i1e9 = 1000 * 1000 * 1000;
@@ -695,7 +1037,7 @@ void Manager::handle_gettimeofday() {
 }
 
 void Manager::handle_clock_gettime() {
-  printf("[FILTER] handling clock_gettime()\n");
+  printf("[FILTER] handling clock_gettime\n");
 
   int status;
   ptrace(PTRACE_SYSCALL, child, 0, 0);

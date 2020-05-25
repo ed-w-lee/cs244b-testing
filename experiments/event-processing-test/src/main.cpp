@@ -261,23 +261,28 @@ int main(int argc, char **argv) {
         switch (ev) {
         case Filter::EV_CONNECT:
         case Filter::EV_SENDTO:
+        case Filter::EV_WRITE:
+        case Filter::EV_RENAME:
         case Filter::EV_SYNCFS:
           proxy.set_alive(node_idx);
           waiting_nodes.insert(node_idx);
-          if (rng() % 1000 == 0) {
+          if (rng() % 1000 < 0) {
             printf("[ORCH STATE] Toggled node - %d\n", node_idx);
             fprintf(stderr, "Killed node - %d\n", node_idx);
             proxy.toggle_node(node_idx);
             manager.toggle_node();
             has_sent = false;
           } else {
-            int res = manager.allow_event(ev);
+            int res = manager.allow_event(ev, 0);
             if (ev == Filter::EV_CONNECT || ev == Filter::EV_SENDTO) {
               if (res < 0) {
                 printf("[ORCH] Send/connect failed\n");
               } else {
                 has_sent = true;
+                to_continue = false;
               }
+            } else {
+              to_continue = true;
             }
           }
           break;
@@ -315,7 +320,7 @@ int main(int argc, char **argv) {
       }
       case ClientFilter::EV_CONNECT:
       case ClientFilter::EV_SENDTO: {
-        if (rng() % 100 == 0) {
+        if (rng() % 100 < 0) {
           fprintf(stderr, "Killed client - %d\n", node_idx);
           printf("[ORCH STATE] Toggled client - %d\n", node_idx);
           proxy.toggle_node(node_idx);
