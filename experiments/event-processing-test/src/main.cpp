@@ -40,8 +40,8 @@
 #include "proxy.h"
 
 static const bool DEATH_ENABLED = true;
-static const int DEATH_RATE = 1000;
-static const int REVIVE_RATE = 100;
+static const int DEATH_RATE = 400;
+static const int REVIVE_RATE = 30;
 static const int CLIENT_DEATH_RATE = 100;
 static const int PRINT_EVERY = 100;
 // prob(rename all before fsync) = 1/FSYNC_RENAME_RATE
@@ -60,6 +60,30 @@ static bool should_die(std::mt19937 rng) {
   } else {
     rng();
     return false;
+  }
+}
+
+static int run_validate(std::vector<std::string> command) {
+  pid_t child = fork();
+  if (child == 0) {
+    const char **args = new const char *[command.size() + 2];
+    for (size_t i = 0; i < command.size(); i++) {
+      args[i] = command[i].c_str();
+    }
+    args[command.size()] = NULL;
+    printf("Executing %d with ", getpid());
+    for (size_t i = 0; i < command.size(); i++) {
+      printf("<%s> ", args[i]);
+    }
+    printf("\n");
+    exit(execv(args[0], (char **)args));
+  }
+  int status;
+  while (true) {
+    waitpid(child, &status, 0);
+    if (WIFEXITED(status)) {
+      return WEXITSTATUS(status);
+    }
   }
 }
 
@@ -176,9 +200,16 @@ int main(int argc, char **argv) {
     non_recv_clients.insert(idx);
   }
 
+  std::vector<std::string> validate_cmd;
+  validate_cmd.push_back(std::string(argv[4]));
+  for (int i = 0; i < NUM_CLIENTS; i++) {
+    validate_cmd.push_back(inet_ntoa(oldaddrs[i].sin_addr));
+  }
+
   unsigned long long cnt = 0;
   unsigned long long it = 0;
   bool has_sent = false;
+  int num_alive_nodes = NUM_NODES;
   while (true) {
     printf("[ORCH] has_sent: %s\n", has_sent ? "true" : "false");
     if (has_sent) {
@@ -211,7 +242,7 @@ int main(int argc, char **argv) {
     const int FACTOR = 2;
     size_t tot_avail_nodes =
         FACTOR * waiting_nodes.size() + non_recv_clients.size();
-    if (tot_avail_nodes > 0) {
+    if (tot_avail_nodes > 0 && num_alive_nodes > 0) {
       size_t to_run = rng() % tot_avail_nodes;
       if (to_run < FACTOR * waiting_nodes.size()) {
         to_run %= waiting_nodes.size();
@@ -259,6 +290,11 @@ int main(int argc, char **argv) {
     }
     if (it++ % PRINT_EVERY == 0) {
       fprintf(stderr, "[ORCH] Current node: %d\n", node_idx);
+      printf("[ORCH] validating\n");
+      if (run_validate(validate_cmd)) {
+        fprintf(stderr, "[ORCH] Validation failed\n\n");
+        exit(1);
+      }
     }
 
     if (node_idx < ClientFilter::CLIENT_OFFS) {
@@ -289,9 +325,18 @@ int main(int argc, char **argv) {
           proxy.set_alive(node_idx);
           waiting_nodes.insert(node_idx);
           if (should_die(rng)) {
-            printf("[ORCH STATE] Toggled node before network - %d\n", node_idx);
+            num_alive_nodes--;
+            printf("[ORCH STATE] Toggled node before network - %d, %d left\n",
+                   node_idx, num_alive_nodes);
             fprintf(stderr, "Killed node before network - %d\n", node_idx);
-            proxy.toggle_node(node_idx);
+            for (auto &tup : proxy.toggle_node(node_idx)) {
+              if (tup.first >= ClientFilter::CLIENT_OFFS) {
+                // node died while there was a client connection, make sure the
+                // client is available to run
+                printf("[ORCH] re-enabling client %d\n", tup.first);
+                non_recv_clients.insert(tup.first);
+              }
+            }
             manager.toggle_node();
             has_sent = false;
             to_continue = false;
@@ -320,9 +365,18 @@ int main(int argc, char **argv) {
             }
           });
           if (ret < 0) {
-            printf("[ORCH STATE] Toggled node during write - %d\n", node_idx);
+            num_alive_nodes--;
+            printf("[ORCH STATE] Toggled node before network - %d, %d left\n",
+                   node_idx, num_alive_nodes);
             fprintf(stderr, "Killed node during write - %d\n", node_idx);
-            proxy.toggle_node(node_idx);
+            for (auto &tup : proxy.toggle_node(node_idx)) {
+              if (tup.first >= ClientFilter::CLIENT_OFFS) {
+                // node died while there was a client connection, make sure the
+                // client is available to run
+                printf("[ORCH] re-enabling client %d\n", tup.first);
+                non_recv_clients.insert(tup.first);
+              }
+            }
             manager.toggle_node();
             to_continue = false;
             has_sent = false;
@@ -333,9 +387,18 @@ int main(int argc, char **argv) {
           proxy.set_alive(node_idx);
           waiting_nodes.insert(node_idx);
           if (should_die(rng)) {
-            printf("[ORCH STATE] Toggled node before fsync - %d\n", node_idx);
+            num_alive_nodes--;
+            printf("[ORCH STATE] Toggled node before network - %d, %d left\n",
+                   node_idx, num_alive_nodes);
             fprintf(stderr, "Killed node before fsync - %d\n", node_idx);
-            proxy.toggle_node(node_idx);
+            for (auto &tup : proxy.toggle_node(node_idx)) {
+              if (tup.first >= ClientFilter::CLIENT_OFFS) {
+                // node died while there was a client connection, make sure the
+                // client is available to run
+                printf("[ORCH] re-enabling client %d\n", tup.first);
+                non_recv_clients.insert(tup.first);
+              }
+            }
             manager.toggle_node();
             has_sent = false;
             to_continue = false;
@@ -356,7 +419,9 @@ int main(int argc, char **argv) {
           waiting_nodes.erase(node_idx);
           int x = rng();
           if (x % REVIVE_RATE == 0) {
-            printf("[ORCH STATE] Toggled node - %d\n", node_idx);
+            num_alive_nodes++;
+            printf("[ORCH STATE] Toggled node before network - %d, %d left\n",
+                   node_idx, num_alive_nodes);
             fprintf(stderr, "Revived node - %d\n", node_idx);
             manager.toggle_node();
             proxy.toggle_node(node_idx);

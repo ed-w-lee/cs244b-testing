@@ -73,6 +73,8 @@ private:
   void stop_client();
 
   std::unordered_set<int> sockfds;
+  // fds for whom connect failed
+  std::unordered_set<int> deadfds;
 
   void handle_socket();
 

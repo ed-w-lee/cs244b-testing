@@ -106,6 +106,10 @@ void FdMap::node_accept_fd(int node, int nodefd, struct sockaddr_in nodeaddr) {
   }
 }
 
+std::pair<int, int> FdMap::get_related_nodefd(int proxyfd) {
+  return proxyfd_to_nodefd[proxyfd];
+}
+
 void FdMap::unregister_proxyfd(int proxyfd) {
   if (proxyfd_to_nodefd.find(proxyfd) != proxyfd_to_nodefd.end()) {
     auto pair = proxyfd_to_nodefd[proxyfd];

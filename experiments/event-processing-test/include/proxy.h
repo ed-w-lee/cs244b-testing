@@ -26,7 +26,8 @@ public:
   void set_alive(int idx);
 
   // starts or stops the given node
-  void toggle_node(int idx);
+  // returns list of (node, nodefd) to notify of death if stopping
+  std::vector<std::pair<int, int>> toggle_node(int idx);
 
   // check for messages, blocking for a new message if needed
   bool poll_for_events(bool blocking);
@@ -69,9 +70,10 @@ private:
   std::unordered_map<int, std::deque<std::vector<char>>> waiting_msgs;
 
   int create_listen(int idx);
-  void stop_node(int idx);
+  std::vector<std::pair<int, int>> stop_node(int idx);
 
   void register_fd(int fd);
-  void unregister_fd(int fd);
+  void unregister_fd(int fd,
+                     std::vector<std::pair<int, int>> *related_nodes = nullptr);
   void link_fds(int fd1, int fd2);
 };

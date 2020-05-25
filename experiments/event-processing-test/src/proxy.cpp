@@ -77,16 +77,17 @@ Proxy::Proxy(FdMap &fdmap, std::vector<sockaddr_in> actual_node_map,
 
 void Proxy::set_alive(int idx) { node_alive[idx] = true; }
 
-void Proxy::toggle_node(int idx) {
+std::vector<std::pair<int, int>> Proxy::toggle_node(int idx) {
   if (node_alive[idx]) {
     poll_for_events(false);
-    stop_node(idx);
+    return stop_node(idx);
   } else {
     node_alive[idx] = true;
-		if (idx < ClientFilter::CLIENT_OFFS) {
-			int sockfd = create_listen(idx);
-			sockfds[idx] = sockfd;
-		}
+    if (idx < ClientFilter::CLIENT_OFFS) {
+      int sockfd = create_listen(idx);
+      sockfds[idx] = sockfd;
+    }
+    return {};
   }
 }
 
@@ -112,11 +113,12 @@ int Proxy::create_listen(int idx) {
   return sockfd;
 }
 
-void Proxy::stop_node(int idx) {
+std::vector<std::pair<int, int>> Proxy::stop_node(int idx) {
   std::unordered_set<int> tmpfds(inbound_fds[idx].begin(),
                                  inbound_fds[idx].end());
+  std::vector<std::pair<int, int>> related_nodes;
   for (int fd : tmpfds) {
-    unregister_fd(fd);
+    unregister_fd(fd, &related_nodes);
   }
   node_alive[idx] = false;
   if (idx < ClientFilter::CLIENT_OFFS) {
@@ -125,6 +127,7 @@ void Proxy::stop_node(int idx) {
     close(sockfds[idx]);
     sockfds[idx] = -1;
   }
+  return related_nodes;
 }
 
 std::vector<int> Proxy::get_fds_with_msgs(int idx) {
@@ -187,7 +190,8 @@ void Proxy::link_fds(int fd1, int fd2) {
   related_fd[fd2] = fd1;
 }
 
-void Proxy::unregister_fd(int fd) {
+void Proxy::unregister_fd(int fd,
+                          std::vector<std::pair<int, int>> *related_nodes) {
   printf("[PROXY] unregistering %d\n", fd);
   fdmap.unregister_proxyfd(fd);
   epoll_ctl(efd, EPOLL_CTL_DEL, fd, nullptr);
@@ -209,6 +213,12 @@ void Proxy::unregister_fd(int fd) {
       related_fd[other_fd] = -1;
 
       if (waiting_msgs[other_fd].empty()) {
+        if (related_nodes != nullptr) {
+          auto tup = fdmap.get_related_nodefd(other_fd);
+          printf("[PROXY] add (%d, %d) to related_nodes\n", tup.first,
+                 tup.second);
+          related_nodes->push_back(tup);
+        }
         unregister_fd(other_fd);
       }
     }

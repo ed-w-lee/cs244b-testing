@@ -38,6 +38,7 @@ while True:
             if err_count > ERR_LIMIT:
                 sys.exit(1)
             continue
+        err_count = 0
         s.close()
 
         if len(data) == 0:

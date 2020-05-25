@@ -240,11 +240,15 @@ int ClientManager::allow_event(Event ev) {
     ptrace(PTRACE_SYSCALL, child, 0, 0);
     waitpid(child, &status, 0);
     if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
-      int ret = (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RAX, 0);
-      if ((int)ret < 0) {
+      struct user_regs_struct regs;
+      ptrace(PTRACE_GETREGS, child, 0, &regs);
+      int ret = (int)regs.rax;
+      int connfd = (int)regs.rdi;
+      if (ret < 0) {
+        printf("[CLIENT] connect failed with %s\n", strerror(-ret));
+        deadfds.insert(connfd);
         return -1;
       } else {
-        int connfd = (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RDI, 0);
         fdmap.node_connect_fd(my_idx, connfd);
         return 0;
       }
@@ -272,6 +276,7 @@ int ClientManager::allow_event(Event ev) {
     }
     fprintf(stderr, "[CLIENT] did not get subsequent syscall\n");
     exit(1);
+    return -1;
   }
   default:
     fprintf(stderr, "[CLIENT] invalid event to allow\n");
@@ -290,7 +295,9 @@ bool ClientManager::handle_close() {
     int fd = (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RDI, 0);
     printf("[CLIENT] closed sockfd: %d\n", fd);
     sockfds.erase(fd);
-    return fdmap.is_nodefd_alive(my_idx, fd);
+    bool no_conn_fail = (deadfds.find(fd) == deadfds.end());
+    deadfds.erase(fd);
+    return no_conn_fail && fdmap.is_nodefd_alive(my_idx, fd);
   }
   return false;
 }

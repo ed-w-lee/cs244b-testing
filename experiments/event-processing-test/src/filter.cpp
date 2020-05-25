@@ -198,8 +198,8 @@ Manager::Manager(int my_idx, std::vector<std::string> command,
   }
   printf("\n");
 
-  // recursively clear anything in prefix
-  _remove_dir(prefix.c_str());
+  // // recursively clear anything in prefix
+  // _remove_dir(prefix.c_str());
 
   vtime.tv_sec = 244244;
   vtime.tv_nsec = 244244244;
@@ -568,63 +568,17 @@ std::pair<std::string, int> Manager::find_root(std::string file, int version) {
 
 void Manager::restore_files() {
   printf("[FILTER] starting restore_files\n");
-  // recursively iterate over any things
-  std::queue<std::string> paths;
-  paths.push(prefix);
-  struct stat s;
-  while (!paths.empty()) {
-    std::string path = paths.front();
-    paths.pop();
-    if (stat(path.c_str(), &s) == 0) {
-      if (s.st_mode & S_IFDIR) {
-        if (path[0] != '/') {
-          fprintf(stderr, "[FILTER] found relative path %s while restoring\n",
-                  path.c_str());
-          exit(1);
-        }
-        // directory, recursively restore contents
-        DIR *dir;
-        struct dirent *ent;
-        if ((dir = opendir(path.c_str())) != NULL) {
-          while ((ent = readdir(dir)) != NULL) {
-            std::string entry(ent->d_name);
-            if (entry.compare(".") == 0 || entry.compare("..") == 0) {
-              continue;
-            }
-            std::string full_path(path);
-            full_path.append("/");
-            full_path.append(entry);
-            paths.push(full_path);
-          }
-          closedir(dir);
-        } else {
-          fprintf(stderr, "[FILTER] failed to open directory of %s: %s\n",
-                  path.c_str(), strerror(errno));
-          exit(1);
-        }
-      } else if (s.st_mode & S_IFREG) {
-        if (!_endswith(path, suffix)) {
-          // regular, non-backup file, attempt to restore from backup file
-          std::string back_file = get_backup_filename(path, file_vers[path]);
-          if (_exists(back_file)) {
-            printf("[FILTER] Copying %s to %s\n", back_file.c_str(),
-                   path.c_str());
-            std::ifstream src(back_file, std::ios::binary);
-            std::ofstream dst(path, std::ios::binary);
-            dst << src.rdbuf();
-          } else {
-            printf("[FILTER] %s not found, nop\n", back_file.c_str());
-          }
-        }
-      } else {
-        fprintf(stderr, "[FILTER] unexpected filetype of: %s\n", path.c_str());
-        exit(1);
-      }
+  for (auto &tup : file_vers) {
+    std::string back_file =
+        get_backup_filename(tup.first, file_vers.at(tup.first));
+    if (_exists(back_file)) {
+      printf("[FILTER] Copying %s to %s\n", back_file.c_str(),
+             tup.first.c_str());
+      std::ifstream src(back_file, std::ios::binary);
+      std::ofstream dst(tup.first, std::ios::binary);
+      dst << src.rdbuf();
     } else {
-      if (errno != ENOENT) {
-        perror("[FILTER] unexpected stat failure: ");
-        exit(1);
-      }
+      printf("[FILTER] %s not found, nop\n", back_file.c_str());
     }
   }
 }
@@ -682,9 +636,6 @@ void Manager::handle_mknod(int arg) {
       if (ret == 0) {
         if (to_mknod[to_mknod.size() - 1] == '/') {
           to_mknod = to_mknod.substr(0, to_mknod.size() - 1);
-        }
-        if (file_vers.find(to_mknod) == file_vers.end()) {
-          file_vers[to_mknod] = 0;
         }
         file_vers[to_mknod]++;
       }
@@ -1145,7 +1096,8 @@ void Manager::handle_poll() {
     ptrace(PTRACE_GETREGS, child, 0, &regs);
     int retval = regs.rax;
     if (retval == 0) {
-      // no updates to polling, which means the program waited the entire time.
+      // no updates to polling, which means the program waited the entire
+      // time.
       printf("[FILTER] no results. updating vtime\n");
       increment_vtime(old_timeout.tv_sec, old_timeout.tv_nsec);
     } else {

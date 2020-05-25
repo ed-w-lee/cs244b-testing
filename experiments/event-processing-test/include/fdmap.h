@@ -36,6 +36,8 @@ public:
 
   void node_accept_fd(int node, int nodefd, struct sockaddr_in nodeaddr);
 
+  std::pair<int, int> get_related_nodefd(int proxyfd);
+
   void unregister_proxyfd(int proxyfd);
 
   bool is_nodefd_alive(int node, int nodefd);
