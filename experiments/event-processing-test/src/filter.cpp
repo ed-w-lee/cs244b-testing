@@ -24,6 +24,7 @@
 #include <syscall.h>
 #include <unistd.h>
 
+#include <functional>
 #include <queue>
 #include <string>
 #include <vector>
@@ -410,8 +411,8 @@ Event Manager::to_next_event() {
           child_state = ST_FILES;
           return EV_WRITE;
         case SYS_rename:
-          child_state = ST_FILES;
-          return EV_RENAME;
+          handle_rename();
+          continue;
         case SYS_renameat:
           // TODO if time, handle renameat
           fprintf(stderr, "unaccounted for renameat\n");
@@ -425,7 +426,7 @@ Event Manager::to_next_event() {
         case SYS_fdatasync:
         case SYS_fsync:
           child_state = ST_FILES;
-          return EV_SYNCFS;
+          return EV_FSYNC;
 
           // network-related
         case SYS_socket:
@@ -464,28 +465,10 @@ Event Manager::to_next_event() {
   }
 }
 
-int Manager::allow_event(Event ev, int cmd) {
+int Manager::allow_event(Event ev) {
   child_state = ST_STOPPED;
   switch (ev) {
     // TODO adjust for feedback from orch
-  case EV_WRITE: {
-    int status;
-    ptrace(PTRACE_SYSCALL, child, 0, 0);
-    waitpid(child, &status, 0);
-    // non-zero command causes fsync
-    if (cmd != 0) {
-      // conveniently, first arg of both write and fsync is the fd
-      handle_fsync();
-    }
-    return 0;
-  }
-  case EV_RENAME: {
-    return handle_rename();
-  }
-  case EV_SYNCFS: {
-    handle_fsync();
-    return 0;
-  }
   case EV_CONNECT: {
     return handle_connect();
   }
@@ -812,11 +795,22 @@ void Manager::perform_next_op() {
   pending_ops.erase(it);
 }
 
-void Manager::handle_fsync() {
+void Manager::handle_fsync(Event ev, std::function<size_t(size_t)> num_ops_fn) {
+  if (ev != EV_FSYNC) {
+    fprintf(stderr, "wrong event for handle_fsync\n");
+    exit(1);
+  }
   printf("[FILTER] handling fsync\n");
+  child_state = ST_STOPPED;
+
+  // do some user-defined number of pending operations
+  size_t ops_to_do = num_ops_fn(pending_ops.size());
+  printf("[FILTER] performing %lu ops before fsync\n", ops_to_do);
+  for (size_t i = 0; i < ops_to_do; i++) {
+    perform_next_op();
+  }
 
   int fd = (int)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RDI, 0);
-
   auto it = fds.find(fd);
   if (it != fds.end()) {
     backup_file(fd);
@@ -824,6 +818,49 @@ void Manager::handle_fsync() {
     fprintf(stderr, "[FILTER] fsync called on fd not accounted fd %d\n", fd);
     exit(1);
   }
+}
+
+int Manager::handle_write(Event ev, std::function<size_t(size_t)> to_write_fn) {
+  if (ev != EV_WRITE) {
+    fprintf(stderr, "wrong event for handle_write\n");
+  }
+  printf("[FILTER] handling write\n");
+  child_state = ST_STOPPED;
+
+  struct user_regs_struct regs;
+  ptrace(PTRACE_GETREGS, child, 0, &regs);
+  int fd = regs.rdi;
+  size_t count = regs.rdx;
+
+  if (fds.find(fd) != fds.end()) {
+    // if this is a filesystem fd into prefix, allow write corruption on it
+    size_t to_write = to_write_fn(count);
+    if (to_write == count) {
+      // normal write, just let it go through
+    } else {
+      // we are failing the entire node after doing a partial write
+      printf("[FILTER] write %lu chars before syncing and failing\n", to_write);
+      regs.rdx = to_write;
+      ptrace(PTRACE_SETREGS, child, 0, &regs);
+      int status;
+      ptrace(PTRACE_SYSCALL, child, 0, 0);
+      waitpid(child, &status, 0);
+      if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+        ssize_t ret =
+            (ssize_t)ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RAX, 0);
+        printf("[FILTER] ret: %lu\n", ret);
+
+        // flush all dentry changes and sync fd
+        while (!pending_ops.empty()) {
+          perform_next_op();
+        }
+        backup_file(fd);
+
+        return -1;
+      }
+    }
+  }
+  return count;
 }
 
 std::string Manager::get_backup_filename(std::string file, int version) {

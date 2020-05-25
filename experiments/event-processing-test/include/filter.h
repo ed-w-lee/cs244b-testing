@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include <deque>
+#include <functional>
 #include <list>
 #include <map>
 #include <unordered_map>
@@ -29,6 +30,7 @@ const uint32_t syscalls_intercept[] = {
     SYS_mknod,
     SYS_mknodat,
     SYS_creat,
+    SYS_close,
     SYS_write, // assume that network doesn't use write
     SYS_rename,
     SYS_renameat, // not handled due to scope
@@ -55,9 +57,8 @@ enum Event {
   EV_DEAD,
   EV_CONNECT,
   EV_SENDTO,
-  EV_SYNCFS,
+  EV_FSYNC,
   EV_WRITE,
-  EV_RENAME,
 };
 
 enum State {
@@ -78,10 +79,10 @@ public:
 
   // allow an event to occur. returns metadata about the event's status
   // has cmd for some arbitrary command for some event
-  int allow_event(Event ev, int cmd);
+  int allow_event(Event ev);
 
-  void handle_fsync();
-  void handle_write();
+  void handle_fsync(Event ev, std::function<size_t(size_t)> num_ops_fn);
+  int handle_write(Event ev, std::function<size_t(size_t)> to_write_fn);
 
   void toggle_node();
 
@@ -150,6 +151,7 @@ private:
 
   void handle_open(bool at);
   void handle_mknod(int arg);
+  void handle_close();
   int handle_rename();
   void perform_next_op();
   std::string get_backup_filename(std::string file, int version);
