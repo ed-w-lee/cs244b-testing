@@ -24,8 +24,10 @@
 #include <syscall.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <functional>
 #include <queue>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -341,6 +343,13 @@ void Manager::stop_node() {
       unlink(try_delete.c_str());
     }
   }
+  for (auto &tup : file_vers) {
+    std::string latest_write(tup.first);
+    latest_write.append(".latest").append(suffix);
+    std::ofstream out(latest_write);
+    std::ifstream in(tup.first);
+    out << in.rdbuf();
+  }
   // clear any operation-related structures
   file_pending.clear();
   ops_done = 0;
@@ -388,6 +397,9 @@ Event Manager::to_next_event() {
         case SYS_clock_gettime:
           handle_clock_gettime();
           continue;
+        case SYS_getrandom:
+          child_state = ST_RANDOM;
+          return EV_RANDOM;
 
           // filesystem-related
         case SYS_openat:
@@ -488,7 +500,7 @@ void Manager::backup_file(int fd) {
 
   struct stat s;
   if (stat(curr_loc.c_str(), &s) == 0) {
-    if (s.st_mode & S_IFDIR) {
+    if (S_ISDIR(s.st_mode)) {
       printf("[FILTER] backing up directory\n");
       // perform rename ops until no more pending ops for any files in the dir
       size_t last_rename = 0;
@@ -504,9 +516,10 @@ void Manager::backup_file(int fd) {
       while (ops_done < last_rename) {
         perform_next_op();
       }
-    } else if (s.st_mode & S_IFREG) {
+    } else if (S_ISREG(s.st_mode)) {
       // persist data based on dependencies
       int curr_vers = file_vers[curr_loc];
+      file_pers[curr_loc] = curr_vers;
       std::string my_file = get_backup_filename(curr_loc, curr_vers);
       bool has_root = false;
       if (!_exists(my_file)) {
@@ -569,8 +582,9 @@ std::pair<std::string, int> Manager::find_root(std::string file, int version) {
 void Manager::restore_files() {
   printf("[FILTER] starting restore_files\n");
   for (auto &tup : file_vers) {
+    printf("[FILTER] Attempting to restore %s\n", tup.first.c_str());
     std::string back_file =
-        get_backup_filename(tup.first, file_vers.at(tup.first));
+        get_backup_filename(tup.first, file_pers.at(tup.first));
     if (_exists(back_file)) {
       printf("[FILTER] Copying %s to %s\n", back_file.c_str(),
              tup.first.c_str());
@@ -593,7 +607,10 @@ void Manager::handle_open(bool at) {
 
   if (_startswith(to_open, prefix)) {
     // store existence of file to check if it was created
-    bool exists = _exists(to_open);
+    bool exists =
+        file_vers.find(to_open) != file_vers.end()
+            ? _exists(get_backup_filename(to_open, file_vers[to_open]))
+            : false;
     // get file descriptor for the opened file so we can register it
     int status;
     ptrace(PTRACE_SYSCALL, child, 0, 0);
@@ -606,11 +623,17 @@ void Manager::handle_open(bool at) {
           to_open = to_open.substr(0, to_open.size() - 1);
         }
         fds[fd] = to_open;
-        if (file_vers.find(to_open) == file_vers.end()) {
-          file_vers[to_open] = 0;
-        }
-        if (!exists) {
-          file_vers[to_open]++;
+        // only maintain versions for regular files (not directories)
+        struct stat s;
+        if (stat(to_open.c_str(), &s) == 0 && S_ISREG(s.st_mode)) {
+          printf("[FILTER] opened a regular file, track file_vers\n");
+          if (file_vers.find(to_open) == file_vers.end()) {
+            file_vers[to_open] = 0;
+            file_pers[to_open] = 0;
+          }
+          if (!exists) {
+            file_vers[to_open]++;
+          }
         }
       }
     }
@@ -649,7 +672,7 @@ int Manager::handle_rename() {
   char src[PATH_MAX];
   char dst[PATH_MAX];
   _read_file(child, src, 1);
-  _read_file(child, dst, 1);
+  _read_file(child, dst, 2);
   printf("[FILTER] renaming %s to %s\n", src, dst);
   if (strncmp(prefix.c_str(), src, strlen(prefix.c_str())) == 0 &&
       strncmp(prefix.c_str(), dst, strlen(prefix.c_str())) == 0) {
@@ -662,12 +685,13 @@ int Manager::handle_rename() {
       printf("[FILTER] return val: %lu\n", ret);
       if (ret == 0) {
         struct stat s;
-        if (stat(src, &s) != 0) {
-          fprintf(stderr, "stat failed on %s with %s\n", src, strerror(errno));
+        if (stat(dst, &s) != 0) {
+          fprintf(stderr, "[FILTER] stat failed on %s with %s\n", src,
+                  strerror(errno));
           exit(1);
-        } else if ((s.st_mode & S_IFREG) == 0) {
+        } else if (!S_ISREG(s.st_mode)) {
           // TODO Support directories for rename (ugh)
-          fprintf(stderr, "rename on directories not supported\n");
+          fprintf(stderr, "[FILTER] rename on directories not supported\n");
           exit(1);
         }
         std::string src_str(src);
@@ -676,7 +700,7 @@ int Manager::handle_rename() {
         // TODO can we somehow GC pending ops that don't matter anymore?
         op_count++;
         file_vers[dst_str]++;
-        pending_ops[op_count] = {{src_str, file_vers[dst_str]},
+        pending_ops[op_count] = {{src_str, file_vers[src_str]},
                                  {dst_str, file_vers[dst_str]}};
         if (file_pending.find(dst_str) == file_pending.end()) {
           file_pending[dst_str] = {};
@@ -742,6 +766,10 @@ void Manager::perform_next_op() {
   }
   file_pending[dst.first].pop_front();
   file_pending[src.first].pop_front();
+  file_pers[src.first] = std::max(file_pers[src.first], src.second + 1);
+  file_pers[dst.first] = std::max(file_pers[dst.first], dst.second);
+  printf("[FILTER] updating file_pers to src: %d and dst: %d\n",
+         file_pers[src.first], file_pers[dst.first]);
   ops_done = it->first;
   pending_ops.erase(it);
 }
@@ -1045,6 +1073,29 @@ void Manager::handle_clock_gettime() {
   }
 }
 
+void Manager::handle_getrandom(std::mt19937 &rng) {
+  printf("[FILTER] handling getrandom\n");
+  child_state = ST_STOPPED;
+
+  int status;
+  ptrace(PTRACE_SYSCALL, child, 0, 0);
+  waitpid(child, &status, 0);
+  if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+    struct user_regs_struct regs;
+    ptrace(PTRACE_GETREGS, child, 0, &regs);
+    ssize_t ret = regs.rax;
+    printf("[FILTER] returned: %lu\n", ret);
+    if (ret > 0) {
+      // generate <ret> pseudo-random bytes
+      char buf[ret + 4];
+      for (int i = 0; i < ret; i += 4) {
+        *(int *)(buf + i) = rng();
+      }
+      _write_to_proc(child, buf, (char *)regs.rdi, ret);
+    }
+  }
+}
+
 void Manager::handle_poll() {
   // get timeout param
   struct user_regs_struct regs;
@@ -1102,7 +1153,8 @@ void Manager::handle_poll() {
       increment_vtime(old_timeout.tv_sec, old_timeout.tv_nsec);
     } else {
       // there were updates. just don't increment offset?
-      printf("[FILTER] found results. no additional updates to vtime\n");
+      printf("[FILTER] found %d results. no additional updates to vtime\n",
+             retval);
     }
   }
 }

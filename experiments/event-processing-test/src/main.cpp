@@ -64,8 +64,15 @@ static bool should_die(std::mt19937 rng) {
 }
 
 static int run_validate(std::vector<std::string> command) {
+  printf("Running validation command: ");
+  for (auto &tok : command) {
+    printf("<%s> ", tok.c_str());
+  }
+  printf("\n");
   pid_t child = fork();
   if (child == 0) {
+    int validate = open("/tmp/validate", O_CREAT | O_WRONLY | O_APPEND, 0644);
+    dup2(validate, STDOUT_FILENO);
     const char **args = new const char *[command.size() + 2];
     for (size_t i = 0; i < command.size(); i++) {
       args[i] = command[i].c_str();
@@ -320,6 +327,12 @@ int main(int argc, char **argv) {
         to_continue = false;
         Filter::Event ev = manager.to_next_event();
         switch (ev) {
+        case Filter::EV_RANDOM: {
+          manager.handle_getrandom(rng);
+          to_continue = true;
+          has_sent = false;
+          break;
+        }
         case Filter::EV_CONNECT:
         case Filter::EV_SENDTO: {
           proxy.set_alive(node_idx);

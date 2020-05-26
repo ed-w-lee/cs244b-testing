@@ -18,6 +18,7 @@ else:
 
 def read_state_file(path):
 	if not os.path.exists(path):
+		print("state file doesn't exist")
 		exit(0) # wait until state file exists
 	with open(path, 'rb') as fin:
 		buf = fin.read(9)
@@ -43,7 +44,8 @@ def read_state_file(path):
 
 def read_logs(path):
 	if not os.path.exists(path):
-		exit(0) # wait until state file exists
+		print("log file doesn't exist")
+		exit(0) # wait until log file exists
 	with open(path, 'rb') as fin:
 		buf = fin.read(8)
 		log_len, = struct.unpack('>q', buf)
@@ -68,16 +70,18 @@ def get_state_and_logs(addr):
 	}
 	
 curr_info = {addr: get_state_and_logs(addr) for addr in all_addrs}
-# print(json.dumps(curr_info, sort_keys=True, indent=2))
+print(json.dumps(curr_info, sort_keys=True, indent=2))
 
 def validate_per_addr(state, entries):
 	# check that terms in log increase, and are at most current term
-	return (
-		state['curr_term'] < 1e9,
-		all([entry[0] <= state['curr_term'] for entry in entries])
-		and
-		all([a[0] <= b[0] for a,b in zip(entries[:-1], entries[1:])])
-	)
+	print("addr validation: ", state['curr_term'])
+	assert(state['curr_term'] < 1e7)
+	assert(state['first_idx'] == 0)
+	assert(state['first_term'] == 0)
+	for entry in entries:
+		assert(entry[0] <= state['curr_term'])
+	for a,b in zip(entries[:-1], entries[1:]):
+		assert(a[0] <= b[0])
 
 def no_mergebacks(a, b):
 	i = 0
@@ -100,27 +104,22 @@ def validate_with_past(curr_info, past_info):
 		curr_state = curr_info[addr]['state']
 		curr_entries = curr_info[addr]['entries']
 
-		if past_state['curr_term'] > curr_state['curr_term']:
-			return False
-		if not no_mergebacks(past_entries, curr_entries):
-			return False
-
-	return True
+		print(past_state['curr_term'], curr_state['curr_term'])
+		assert(past_state['curr_term'] <= curr_state['curr_term'])
+		assert(no_mergebacks(past_entries, curr_entries))
 
 def validate_curr(curr_info):
 	for i, addr_i in enumerate(all_addrs):
 		for j in range(i):
 			addr_j = all_addrs[j]
-			if not no_mergebacks(curr_info[addr_i]['entries'], curr_info[addr_j]['entries']):
-				return False
-	return True
+			assert(no_mergebacks(curr_info[addr_i]['entries'], curr_info[addr_j]['entries']))
 
 for addr, sl in curr_info.items():
-	assert(validate_per_addr(sl['state'], sl['entries']))
+	validate_per_addr(sl['state'], sl['entries'])
 
 if past_info:
-	assert(validate_with_past(curr_info, past_info))
-assert(validate_curr(curr_info))
+	validate_with_past(curr_info, past_info)
+validate_curr(curr_info)
 
 with open(f_persist, 'w+') as fout:
 	json.dump(curr_info, fout)

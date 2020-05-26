@@ -24,6 +24,7 @@ const uint32_t syscalls_intercept[] = {
     SYS_poll,
     SYS_gettimeofday,
     SYS_clock_gettime,
+    SYS_getrandom,
     // filesystem-related
     SYS_open,
     SYS_openat,
@@ -55,6 +56,7 @@ enum Event {
   EV_POLLING,
   EV_EXIT,
   EV_DEAD,
+  EV_RANDOM,
   EV_CONNECT,
   EV_SENDTO,
   EV_FSYNC,
@@ -65,6 +67,7 @@ enum State {
   ST_DEAD,
   ST_POLLING,
   ST_STOPPED,
+  ST_RANDOM,
   ST_FILES,
   ST_NETWORK,
 };
@@ -83,6 +86,7 @@ public:
 
   void handle_fsync(Event ev, std::function<size_t(size_t)> num_ops_fn);
   int handle_write(Event ev, std::function<size_t(size_t)> to_write_fn);
+  void handle_getrandom(std::mt19937 &rng);
 
   void toggle_node();
 
@@ -121,8 +125,10 @@ private:
   // filesystem-related file descriptors
   // value: current path
   std::unordered_map<int, std::string> fds;
-  // current version of a file
+  // latest version of a file
   std::unordered_map<std::string, int> file_vers;
+  // latest persisted version of a file
+  std::unordered_map<std::string, int> file_pers;
   // all pending op indexes for a given file
   // file -> [pending op]
   std::unordered_map<std::string, std::deque<size_t>> file_pending;
