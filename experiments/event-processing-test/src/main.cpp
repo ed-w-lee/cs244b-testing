@@ -52,7 +52,7 @@ static const int MSG_DELAY_RATE = 5;
 static const int PRIMARY_PC = 94;
 // percent chance node 1 runs first for a given "round"
 static const int SECONDARY_PC = 3;
-static const int NUM_ITERS = 100000;
+static const int NUM_ITERS = 50000;
 
 // maintain same rng counts regardless of death enabled or not
 static bool should_die(std::mt19937 rng) {

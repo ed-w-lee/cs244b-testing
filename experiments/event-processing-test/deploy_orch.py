@@ -7,6 +7,7 @@ import sys
 import time
 import errno
 import shlex
+import subprocess
 from collections import deque
 
 
@@ -48,7 +49,10 @@ def manage_orch(conf, seed, addrs):
   command = './orch "{}" '.format(seed) \
             + '"{node_cmd}" "{client_cmd}" "{val_cmd}" '.format(**conf)
   command = shlex.split(command)
-  os.system(conf['clean'])
+
+  clean_cmd = [conf['clean'], str(seed)]
+  res = subprocess.run(clean_cmd)
+  print('finished cleaning with {} using {}'.format(res.returncode, clean_cmd))
   print('running {}'.format(command))
   try:
     child_pid = os.fork()
@@ -122,6 +126,11 @@ def deploy_orchs(conf, parallel):
     if exit_status >= 100:
       # likely manage_orch exited
       print('manage_orch {} exited unexpectedly: {}'.format(pid, exit_status))
+      wait_for_children_to_finish()
+      exit(1)
+    elif exit_status == 1:
+      # orch failed. we'd want to keep running, but for now just exit
+      print('orch {} failed'.format(pid))
       wait_for_children_to_finish()
       exit(1)
 

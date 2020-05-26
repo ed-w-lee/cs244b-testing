@@ -6,3 +6,4 @@ rm -f /tmp/validate
 rm -rf /tmp/rafted_*
 rm -f /tmp/client_*
 rm -rf /tmp/filter_*
+rm -f /tmp/trace_$1

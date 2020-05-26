@@ -295,10 +295,11 @@ void Manager::start_node() {
       ptrace(PTRACE_CONT, child, NULL, NULL);
       waitpid(pid, &status, 0);
     }
+    printf("[FILTER] hit exec point\n");
     // before exec starts, we overwrite AT_SYSINFO_EHDR
-    char todo[2000];
+    char todo[4000];
     long rsp = ptrace(PTRACE_PEEKUSER, child, sizeof(long) * RSP, 0);
-    size_t num_to_get = command.size() + 70;
+    size_t num_to_get = command.size() + 150;
     _read_from_proc(child, (char *)todo, (char *)rsp,
                     num_to_get * sizeof(long));
     int num_nulls = 0;
@@ -306,6 +307,8 @@ void Manager::start_node() {
     bool did_overwrite = false;
     for (size_t i = 0; i < num_to_get; i++) {
       long ptr = *(long *)(&todo[i * sizeof(long)]);
+
+      printf("[FILTER] this ptr: %lx\n", ptr);
       if (num_nulls == 2) {
         auxv_idx++;
         if (auxv_idx == 2) {
@@ -316,6 +319,7 @@ void Manager::start_node() {
           long null = 0;
           _write_to_proc(child, (char *)&null, (char *)rsp + (i * sizeof(long)),
                          sizeof(long));
+          break;
         }
       }
       if (ptr == 0) {
