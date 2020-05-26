@@ -107,6 +107,7 @@ int Proxy::create_listen(int idx) {
   }
   if (listen(sockfd, 100) < 0) {
     fprintf(stderr, "[PROXY] listen failed: %s\n", strerror(errno));
+    exit(1);
   }
 
   register_fd(sockfd);

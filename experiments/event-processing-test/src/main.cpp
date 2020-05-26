@@ -52,6 +52,7 @@ static const int MSG_DELAY_RATE = 5;
 static const int PRIMARY_PC = 94;
 // percent chance node 1 runs first for a given "round"
 static const int SECONDARY_PC = 3;
+static const int NUM_ITERS = 100000;
 
 // maintain same rng counts regardless of death enabled or not
 static bool should_die(std::mt19937 rng) {
@@ -94,6 +95,22 @@ static int run_validate(std::vector<std::string> command) {
   }
 }
 
+static void kill_children() {
+  // not sure how to properly kill children properly
+  // just send SIGTERM, and then wait a few ms, then exit
+  // likely due to children being under ptrace
+  signal(SIGQUIT, SIG_IGN);
+  kill(0, SIGQUIT);
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
+
+// Returns:
+// - 0 if successful
+// - 1 if orch failed unexpectedly
+// - 2 if node failed
+// - 3 if client failed
+// - 4 if validation failed
+// - 5 if arguments wrong
 int main(int argc, char **argv) {
   if (argc < 3) {
     // too lazy to do proper arg parsing
@@ -107,7 +124,7 @@ int main(int argc, char **argv) {
     //         "--!new-addrs [<addr:port>]"
     //         "\n",
     //         argv[0]);
-    return 1;
+    exit(5);
   }
 
   std::string str_seed(argv[1]);
@@ -217,7 +234,7 @@ int main(int argc, char **argv) {
   unsigned long long it = 0;
   bool has_sent = false;
   int num_alive_nodes = NUM_NODES;
-  while (true) {
+  while (NUM_ITERS <= 0 || it++ < NUM_ITERS) {
     printf("[ORCH] has_sent: %s\n", has_sent ? "true" : "false");
     if (has_sent) {
       proxy.poll_for_events(true);
@@ -299,8 +316,10 @@ int main(int argc, char **argv) {
       fprintf(stderr, "[ORCH] Current node: %d\n", node_idx);
       printf("[ORCH] validating\n");
       if (run_validate(validate_cmd)) {
+        fflush(stdout);
         fprintf(stderr, "[ORCH] Validation failed\n\n");
-        exit(1);
+        kill_children();
+        exit(4);
       }
     }
 
@@ -449,8 +468,10 @@ int main(int argc, char **argv) {
           break;
         }
         case Filter::EV_EXIT: {
+          fflush(stdout);
           fprintf(stderr, "[ORCH] node %d exited unexpectedly.\n", node_idx);
-          exit(1);
+          kill_children();
+          exit(2);
         }
         }
       } while (to_continue);
@@ -494,12 +515,17 @@ int main(int argc, char **argv) {
         break;
       }
       case Filter::EV_EXIT: {
+        fflush(stdout);
         fprintf(stderr, "[ORCH] client %d exited unexpectedly.\n", node_idx);
-        exit(1);
+        kill_children();
+        exit(3);
       }
       }
     }
   }
 
   printf("[ORCH] finished successfully\n");
+  fflush(stdout);
+  kill_children();
+  exit(0);
 }

@@ -303,6 +303,7 @@ void Manager::start_node() {
                     num_to_get * sizeof(long));
     int num_nulls = 0;
     int auxv_idx = 0;
+    bool did_overwrite = false;
     for (size_t i = 0; i < num_to_get; i++) {
       long ptr = *(long *)(&todo[i * sizeof(long)]);
       if (num_nulls == 2) {
@@ -311,6 +312,7 @@ void Manager::start_node() {
           // AT_SYSINFO_EHDR (vDSO location) experimentally found to be 2nd
           // element in aux vector (at least in my OS **thinking**)
           printf("[FILTER] overwriting vDSO: %lx\n", ptr);
+          did_overwrite = true;
           long null = 0;
           _write_to_proc(child, (char *)&null, (char *)rsp + (i * sizeof(long)),
                          sizeof(long));
@@ -319,6 +321,10 @@ void Manager::start_node() {
       if (ptr == 0) {
         num_nulls++;
       }
+    }
+    if (!did_overwrite) {
+      fprintf(stderr, "[FILTER] Failed to overwrite vDSO\n");
+      exit(1);
     }
   }
 
