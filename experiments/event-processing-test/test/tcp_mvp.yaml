@@ -1,9 +1,0 @@
-node_cmd: ./tcp_mvp
-client_cmd: ./test/client.py
-val_cmd: ./test/validate.py
-clean: ./test/clean.sh
-addr_range:
-  - [10, 11]
-  - [20, 21]
-  - 30
-  - 31

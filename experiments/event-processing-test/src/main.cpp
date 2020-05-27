@@ -27,8 +27,10 @@
 #include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <random>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -39,6 +41,8 @@
 #include "filter.h"
 #include "proxy.h"
 
+static const int NUM_NODES = 3;
+static const int NUM_CLIENTS = 3;
 static const bool DEATH_ENABLED = true;
 static const int DEATH_RATE = 400;
 static const int REVIVE_RATE = 30;
@@ -52,10 +56,10 @@ static const int MSG_DELAY_RATE = 5;
 static const int PRIMARY_PC = 94;
 // percent chance node 1 runs first for a given "round"
 static const int SECONDARY_PC = 3;
-static const int NUM_ITERS = 50000;
+static const int NUM_ITERS = 20000;
 
 // maintain same rng counts regardless of death enabled or not
-static bool should_die(std::mt19937 rng) {
+static bool should_die(std::mt19937 &rng) {
   if (DEATH_ENABLED) {
     return (rng() % DEATH_RATE) == 0;
   } else {
@@ -64,15 +68,19 @@ static bool should_die(std::mt19937 rng) {
   }
 }
 
-static int run_validate(std::vector<std::string> command) {
-  printf("Running validation command: ");
+static int run_validate(std::string seed, std::vector<std::string> command) {
+  printf("[FILTER] Running validation command: ");
   for (auto &tok : command) {
     printf("<%s> ", tok.c_str());
   }
   printf("\n");
   pid_t child = fork();
   if (child == 0) {
-    int validate = open("/tmp/validate", O_CREAT | O_WRONLY | O_APPEND, 0644);
+    std::ostringstream oss;
+    oss << "/tmp/validate_";
+    oss << seed;
+    std::string val_file = oss.str();
+    int validate = open(val_file.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0644);
     dup2(validate, STDOUT_FILENO);
     const char **args = new const char *[command.size() + 2];
     for (size_t i = 0; i < command.size(); i++) {
@@ -104,6 +112,226 @@ static void kill_children() {
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
 }
 
+enum orch_mode { UNINIT, RAND, VISITED };
+
+enum config_field {
+  SPECIFIER,
+  MODE,
+  SEED,
+  NODE_CMD,
+  CLIENT_CMD,
+  VAL_CMD,
+  OLD_ADDRS,
+  NEW_ADDRS,
+  NODE_DIR,
+  LISTEN_PORT,
+};
+
+struct orch_config {
+  orch_mode mode;
+  std::string seed;
+  std::vector<std::string> node_cmd;
+  std::vector<std::string> client_cmd;
+  std::vector<std::string> val_cmd;
+  std::vector<std::string> old_addrs;
+  std::vector<std::string> new_addrs;
+  std::string node_dir;
+  in_port_t listen_port;
+};
+
+bool validate_args(int argc, char **argv, orch_config &config) {
+  config_field next_arg = SPECIFIER;
+  std::unordered_set<std::string> old_addrs_set;
+  for (int i = 1; i < argc; i++) {
+    std::string arg(argv[i]);
+    switch (next_arg) {
+    case SPECIFIER: {
+      // expect a specifier
+      if (arg.length() < 2 || (arg[0] != '-' || arg[1] != '-')) {
+        fprintf(stderr, "expected specifier like --mode instead of %s\n",
+                argv[i]);
+        return false;
+      } else {
+        std::string actual_spec = arg.substr(2);
+        if (actual_spec.compare("mode") == 0) {
+          next_arg = MODE;
+        } else if (actual_spec.compare("seed") == 0) {
+          next_arg = SEED;
+        } else if (actual_spec.compare("node") == 0) {
+          next_arg = NODE_CMD;
+        } else if (actual_spec.compare("client") == 0) {
+          next_arg = CLIENT_CMD;
+        } else if (actual_spec.compare("val") == 0) {
+          next_arg = VAL_CMD;
+        } else if (actual_spec.compare("old-addrs") == 0) {
+          next_arg = OLD_ADDRS;
+        } else if (actual_spec.compare("new-addrs") == 0) {
+          next_arg = NEW_ADDRS;
+        } else if (actual_spec.compare("node-dir") == 0) {
+          next_arg = NODE_DIR;
+        } else if (actual_spec.compare("listen-port") == 0) {
+          next_arg = LISTEN_PORT;
+        } else {
+          fprintf(stderr, "unexpected specifier %s\n", actual_spec.c_str());
+          return false;
+        }
+      }
+      break;
+    }
+    case MODE: {
+      next_arg = SPECIFIER;
+      if (arg.compare("rand") == 0) {
+        config.mode = orch_mode::RAND;
+      } else if (arg.compare("visited") == 0) {
+        config.mode = orch_mode::VISITED;
+      } else {
+        fprintf(stderr, "unexpected mode %s\n", arg.c_str());
+        return false;
+      }
+      break;
+    }
+    case SEED: {
+      next_arg = SPECIFIER;
+      if (arg.length() == 0) {
+        fprintf(stderr, "seed should not be empty\n");
+        return false;
+      } else {
+        config.seed = arg;
+      }
+      break;
+    }
+    case NODE_CMD:
+    case CLIENT_CMD:
+    case VAL_CMD: {
+      if (arg.length() == 0) {
+        fprintf(stderr, "%s should not be empty", argv[i - 1] + 2);
+        return false;
+      } else {
+        std::istringstream iss(arg);
+        std::string token;
+        std::vector<std::string> cmd;
+        while (std::getline(iss, token, '#')) {
+          cmd.push_back(token);
+        }
+        if (next_arg == NODE_CMD) {
+          config.node_cmd = cmd;
+        } else if (next_arg == CLIENT_CMD) {
+          config.client_cmd = cmd;
+        } else {
+          config.val_cmd = cmd;
+        }
+      }
+      next_arg = SPECIFIER;
+      break;
+    }
+    case OLD_ADDRS:
+    case NEW_ADDRS: {
+      std::istringstream iss(arg);
+      std::vector<std::string> addrs{std::istream_iterator<std::string>{iss},
+                                     std::istream_iterator<std::string>{}};
+      if (addrs.size() != NUM_NODES) {
+        fprintf(stderr, "%s needs %d addrs\n", argv[i - 1] + 2, NUM_NODES);
+        return false;
+      }
+      struct in_addr ad;
+      for (const auto &addr : addrs) {
+        if (inet_aton(addr.c_str(), &ad) == 0) {
+          fprintf(stderr, "couldn't parse addr %s, or it's 255.255.255.255\n",
+                  addr.c_str());
+          return false;
+        }
+      }
+
+      if (next_arg == OLD_ADDRS) {
+        config.old_addrs = addrs;
+        old_addrs_set =
+            std::unordered_set<std::string>{addrs.begin(), addrs.end()};
+      } else {
+        config.new_addrs = addrs;
+      }
+      next_arg = SPECIFIER;
+      break;
+    }
+    case NODE_DIR: {
+      next_arg = SPECIFIER;
+      if (arg.length() == 0) {
+        fprintf(stderr, "node-dir should not be empty\n");
+        return false;
+      } else {
+        config.node_dir = arg;
+      }
+      break;
+    }
+    case LISTEN_PORT: {
+      next_arg = SPECIFIER;
+      try {
+        int potential_port = std::atoi(arg.c_str());
+        if (potential_port < std::numeric_limits<short>::max() &&
+            potential_port > 0) {
+          config.listen_port = potential_port;
+        } else {
+          fprintf(stderr, "listen-port out of bounds\n");
+          return false;
+        }
+      } catch (...) {
+        fprintf(stderr, "failed to parse listen-port %s\n", arg.c_str());
+        return false;
+      }
+      break;
+    }
+    }
+  }
+
+  if (config.mode == orch_mode::UNINIT || config.seed.empty() ||
+      config.node_cmd.empty() || config.client_cmd.empty() ||
+      config.val_cmd.empty() || config.node_dir.empty() ||
+      config.listen_port == 0) {
+    fprintf(stderr, "missing some arg\n");
+    return false;
+  }
+  for (const auto &new_addr : config.new_addrs) {
+    if (old_addrs_set.find(new_addr) != old_addrs_set.end()) {
+      fprintf(stderr, "new addr %s is in old addrs\n", new_addr.c_str());
+      return false;
+    }
+  }
+
+  printf("[ORCH] validated config successfully:\n");
+  printf("[ORCH] parsed config:\n");
+  printf("       - mode: %s\n",
+         config.mode == orch_mode::RAND ? "rand" : "visited");
+  printf("       - seed: %s\n", config.seed.c_str());
+  printf("       - node_cmd: [ ");
+  for (const auto &tok : config.node_cmd) {
+    printf("%s ", tok.c_str());
+  }
+  printf("]\n");
+  printf("       - client_cmd: [ ");
+  for (const auto &tok : config.client_cmd) {
+    printf("%s ", tok.c_str());
+  }
+  printf("]\n");
+  printf("       - val_cmd: [ ");
+  for (const auto &tok : config.val_cmd) {
+    printf("%s ", tok.c_str());
+  }
+  printf("]\n");
+  printf("       - old_addrs: [ ");
+  for (const auto &old_addr : config.old_addrs) {
+    printf("%s ", old_addr.c_str());
+  }
+  printf("]\n");
+  printf("       - new_addrs: [ ");
+  for (const auto &new_addr : config.new_addrs) {
+    printf("%s ", new_addr.c_str());
+  }
+  printf("]\n");
+  printf("       - node_dir: \"%s\"\n", config.node_dir.c_str());
+  printf("       - listen_port: %hu\n", config.listen_port);
+
+  return true;
+}
+
 // Returns:
 // - 0 if successful
 // - 1 if orch failed unexpectedly
@@ -112,56 +340,74 @@ static void kill_children() {
 // - 4 if validation failed
 // - 5 if arguments wrong
 int main(int argc, char **argv) {
-  if (argc < 3) {
+  orch_config config = {
+      orch_mode::UNINIT, // mode
+      "CS244B",          // seed
+      {},                // node_cmd
+      {},                // client_cmd
+      {},                // val_cmd
+      {},                // old_addrs
+      {},                // new_addrs
+      "",                // node_dir
+      0,                 // listen_port
+  };
+  if (!validate_args(argc, argv, config)) {
     // too lazy to do proper arg parsing
-    // fprintf(stderr,
-    //         "Usage (ordering matters!): %s"
-    //         "--!mode (rand|replay) \t"
-    //         "--!seed <seed> \t"
-    //         "--!node <prog> <args> "
-    //         "--!client <client> <args>"
-    //         "--!old-addrs [<addr:port>]"
-    //         "--!new-addrs [<addr:port>]"
-    //         "\n",
-    //         argv[0]);
-    exit(5);
+    fprintf(stderr,
+            "Usage: %s\n"
+            "--mode (rand|visited) \n"
+            "--seed <seed> \n"
+            "--node \"<prog> <args>\"\n"
+            "\t- allows {addr} for node's addr "
+            "and {o_addrs} for all other addrs\n"
+            "--client \"<client> <args>\"\n"
+            "--val \"<validate> <args>\"\n"
+            "--old-addrs \"<addr> <addr> ...\"\n"
+            "--new-addrs \"<addr> <addr> ...\"\n"
+            "--node-dir \"<dir>\"\n"
+            "\t- allows {addr} for node's addr\n"
+            "--listen-port <port>\n"
+            "\n"
+            "commands should be delimited by #, not spaces",
+            argv[0]);
+    exit(1);
   }
 
-  std::string str_seed(argv[1]);
-  std::seed_seq seed(str_seed.begin(), str_seed.end());
+  std::seed_seq seed(config.seed.begin(), config.seed.end());
   std::mt19937 rng(seed);
 
-  const int NUM_NODES = 3;
-  const int NUM_CLIENTS = 3;
   FdMap fdmap(NUM_NODES, NUM_CLIENTS);
 
-  sockaddr_in oldaddrs[NUM_NODES];
-  sockaddr_in newaddrs[NUM_NODES];
-  {
-    for (int i = 0; i < NUM_NODES; i++) {
-      oldaddrs[i].sin_family = AF_INET;
-      oldaddrs[i].sin_port = htons(4242);
-
-      newaddrs[i].sin_family = AF_INET;
-      newaddrs[i].sin_port = htons(4242);
-    }
-    oldaddrs[0].sin_addr.s_addr = inet_addr("127.0.0.11");
-    oldaddrs[1].sin_addr.s_addr = inet_addr("127.0.0.21");
-    oldaddrs[2].sin_addr.s_addr = inet_addr("127.0.0.31");
-
-    newaddrs[0].sin_addr.s_addr = inet_addr("127.0.0.10");
-    newaddrs[1].sin_addr.s_addr = inet_addr("127.0.0.20");
-    newaddrs[2].sin_addr.s_addr = inet_addr("127.0.0.30");
-  }
-
-  std::vector<sockaddr_in> newaddrs_vec;
-  std::vector<sockaddr_in> oldaddrs_vec;
+  std::vector<sockaddr_in> newaddrs;
+  std::vector<sockaddr_in> oldaddrs;
   for (int i = 0; i < NUM_NODES; i++) {
-    newaddrs_vec.push_back(newaddrs[i]);
-    oldaddrs_vec.push_back(oldaddrs[i]);
+    printf("%s -> %s\n", config.old_addrs[i].c_str(),
+           config.new_addrs[i].c_str());
+    {
+      struct sockaddr_in newaddr;
+      // addr already validated, so use inet_addr
+      newaddr.sin_addr.s_addr = inet_addr(config.new_addrs[i].c_str());
+      newaddr.sin_family = AF_INET;
+      newaddr.sin_port = htons(config.listen_port);
+      newaddrs.push_back(newaddr);
+    }
+    {
+      struct sockaddr_in oldaddr;
+      // addr already validated, so use inet_addr
+      oldaddr.sin_addr.s_addr = inet_addr(config.old_addrs[i].c_str());
+      oldaddr.sin_family = AF_INET;
+      oldaddr.sin_port = htons(config.listen_port);
+      oldaddrs.push_back(oldaddr);
+    }
+  }
+  printf("newaddr: %lu, oldaddr: %lu\n", newaddrs.size(), oldaddrs.size());
+  for (int i = 0; i < NUM_NODES; i++) {
+    printf("%s:%hu -> %s:%hu\n", inet_ntoa(oldaddrs[i].sin_addr),
+           ntohs(oldaddrs[i].sin_port), inet_ntoa(newaddrs[i].sin_addr),
+           ntohs(newaddrs[i].sin_port));
   }
 
-  Proxy proxy(fdmap, newaddrs_vec, oldaddrs_vec, NUM_CLIENTS);
+  Proxy proxy(fdmap, newaddrs, oldaddrs, NUM_CLIENTS);
   // // FIXME temporary for testing proxy
   // {
   //   while (true) {
@@ -191,20 +437,37 @@ int main(int argc, char **argv) {
   std::set<int> waiting_nodes;
   std::unordered_map<int, int> num_polls;
   for (int i = 0; i < NUM_NODES; i++) {
-    std::string node_addr(inet_ntoa(oldaddrs[i].sin_addr));
-    std::vector<std::string> command = {std::string(argv[2]), "-a", node_addr,
-                                        "-o"};
-    for (int j = 0; j < NUM_NODES; j++) {
-      if (i != j) {
-        command.push_back(inet_ntoa(oldaddrs[j].sin_addr));
+    std::string node_addr = config.old_addrs[i];
+    std::vector<std::string> command;
+    for (const auto &tok : config.node_cmd) {
+      if (tok.compare("{addr}") == 0) {
+        command.push_back(node_addr);
+      } else if (tok.compare("{o_addrs}") == 0) {
+        for (int j = 0; j < NUM_NODES; j++) {
+          if (i != j) {
+            command.push_back(inet_ntoa(oldaddrs[j].sin_addr));
+          }
+        }
+      } else {
+        command.push_back(tok);
       }
     }
 
-    std::string rafted_prefix("/tmp/rafted_tcpmvp_");
-    rafted_prefix.append(node_addr);
-
+    std::string node_dir;
+    size_t found = 0;
+    size_t next;
+    while (true) {
+      next = config.node_dir.find("{addr}", found);
+      if (next == config.node_dir.npos) {
+        break;
+      }
+      node_dir.append(config.node_dir.substr(found, next - found));
+      node_dir.append(node_addr);
+      found = next + 6;
+    }
+    node_dir.append(config.node_dir.substr(found));
     managers.push_back(Filter::Manager(i, command, oldaddrs[i], newaddrs[i],
-                                       fdmap, rafted_prefix, false));
+                                       fdmap, node_dir, false));
     waiting_nodes.insert(i);
     num_polls[i] = 0;
     // // FIXME temporary for testing virtual clock stuff
@@ -216,18 +479,10 @@ int main(int argc, char **argv) {
   std::vector<ClientFilter::ClientManager> clients;
   std::set<int> non_recv_clients;
   for (int i = 0; i < NUM_CLIENTS; i++) {
-    std::vector<std::string> command;
-    command.push_back(std::string(argv[3]));
-
     int idx = ClientFilter::CLIENT_OFFS + i;
-    clients.push_back(ClientFilter::ClientManager(idx, command, fdmap, false));
+    clients.push_back(ClientFilter::ClientManager(
+        idx, config.seed, config.client_cmd, fdmap, false));
     non_recv_clients.insert(idx);
-  }
-
-  std::vector<std::string> validate_cmd;
-  validate_cmd.push_back(std::string(argv[4]));
-  for (int i = 0; i < NUM_CLIENTS; i++) {
-    validate_cmd.push_back(inet_ntoa(oldaddrs[i].sin_addr));
   }
 
   unsigned long long cnt = 0;
@@ -312,12 +567,13 @@ int main(int argc, char **argv) {
       // node_idx = (cnt++) % NUM_NODES;
       printf("[ORCH] Progressing node %d\n", node_idx);
     }
-    if (it++ % PRINT_EVERY == 0) {
+    if ((it % PRINT_EVERY) == 0) {
       fprintf(stderr, "[ORCH] Current node: %d\n", node_idx);
       printf("[ORCH] validating\n");
-      if (run_validate(validate_cmd)) {
+      if (run_validate(config.seed, config.val_cmd)) {
         fflush(stdout);
         fprintf(stderr, "[ORCH] Validation failed\n\n");
+        printf("[ORCH] Validation failed\n\n");
         kill_children();
         exit(4);
       }
@@ -468,8 +724,9 @@ int main(int argc, char **argv) {
           break;
         }
         case Filter::EV_EXIT: {
-          fflush(stdout);
           fprintf(stderr, "[ORCH] node %d exited unexpectedly.\n", node_idx);
+          printf("[ORCH] node %d exited unexpectedly.\n", node_idx);
+          fflush(stdout);
           kill_children();
           exit(2);
         }
@@ -517,6 +774,7 @@ int main(int argc, char **argv) {
       case Filter::EV_EXIT: {
         fflush(stdout);
         fprintf(stderr, "[ORCH] client %d exited unexpectedly.\n", node_idx);
+        printf("[ORCH] client %d exited unexpectedly.\n", node_idx);
         kill_children();
         exit(3);
       }

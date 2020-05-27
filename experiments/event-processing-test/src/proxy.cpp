@@ -67,10 +67,10 @@ Proxy::Proxy(FdMap &fdmap, std::vector<sockaddr_in> actual_node_map,
     sockfds.push_back(sockfd);
 
     node_alive[i] = false;
-    inbound_fds[i] = std::unordered_set<int>();
+    inbound_fds[i] = std::set<int>();
   }
   for (size_t i = 0; i < num_clients; i++) {
-    inbound_fds[ClientFilter::CLIENT_OFFS + i] = std::unordered_set<int>();
+    inbound_fds[ClientFilter::CLIENT_OFFS + i] = std::set<int>();
     node_alive[ClientFilter::CLIENT_OFFS + i] = false;
   }
 }
@@ -83,10 +83,6 @@ std::vector<std::pair<int, int>> Proxy::toggle_node(int idx) {
     return stop_node(idx);
   } else {
     node_alive[idx] = true;
-    if (idx < ClientFilter::CLIENT_OFFS) {
-      int sockfd = create_listen(idx);
-      sockfds[idx] = sockfd;
-    }
     return {};
   }
 }
@@ -122,12 +118,6 @@ std::vector<std::pair<int, int>> Proxy::stop_node(int idx) {
     unregister_fd(fd, &related_nodes);
   }
   node_alive[idx] = false;
-  if (idx < ClientFilter::CLIENT_OFFS) {
-    epoll_ctl(efd, EPOLL_CTL_DEL, sockfds[idx], nullptr);
-    printf("[PROXY] closing listen fd %d for: %d\n", sockfds[idx], idx);
-    close(sockfds[idx]);
-    sockfds[idx] = -1;
-  }
   return related_nodes;
 }
 
@@ -233,6 +223,7 @@ bool Proxy::poll_for_events(bool blocking) {
   struct epoll_event evs[NUM_EVENTS];
   bool something_occurred = false;
 
+  fflush(stdout); // make sure we have most up-to-date log if this blocks
   int num_events =
       epoll_wait(efd, (epoll_event *)&evs, NUM_EVENTS, blocking ? -1 : 0);
   printf("[PROXY] found %d events\n", num_events);
@@ -263,7 +254,6 @@ bool Proxy::poll_for_events(bool blocking) {
                  inet_ntoa(new_conn.sin_addr), ntohs(new_conn.sin_port));
 
           if (!node_alive[my_idx] || *it == -1) {
-            fprintf(stderr, "[PROXY] node is not alive, sockfd: %d\n", *it);
             unregister_fd(fromfd);
             fdmap.trash_last_node();
             continue;

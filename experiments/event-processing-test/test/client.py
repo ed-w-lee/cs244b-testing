@@ -2,7 +2,8 @@
 import socket
 import sys
 
-all_addrs = ['127.0.0.11', '127.0.0.21', '127.0.0.31']
+all_addrs = sys.argv[1:]
+
 curr_addr = all_addrs[0]
 read_val = 0
 counter = 1

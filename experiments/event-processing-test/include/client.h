@@ -38,7 +38,8 @@ const int CLIENT_OFFS = 1000;
 
 class ClientManager {
 public:
-  ClientManager(int client_idx, std::vector<std::string> command, FdMap &fdmap,
+  ClientManager(int client_idx, std::string seed,
+                std::vector<std::string> command, FdMap &fdmap,
                 bool ignore_stdout);
 
   Event to_next_event();
@@ -53,6 +54,7 @@ public:
 
 private:
   int my_idx;
+  std::string seed;
 
   // the command being run by the manager for starting the client
   std::vector<std::string> command;

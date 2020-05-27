@@ -7,6 +7,7 @@
 #include <syscall.h>
 
 #include <deque>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -60,7 +61,7 @@ private:
   FdMap &fdmap;
 
   // all inbound fds for a given destination node
-  std::unordered_map<int, std::unordered_set<int>> inbound_fds;
+  std::unordered_map<int, std::set<int>> inbound_fds;
   // fd -> destination node idx
   std::unordered_map<int, int> fd_to_node;
   // fd -> proxied fd (2-way)

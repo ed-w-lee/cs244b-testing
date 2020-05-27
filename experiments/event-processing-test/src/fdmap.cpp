@@ -35,7 +35,9 @@ FdMap::FdMap(size_t num_nodes, size_t num_clients)
 int FdMap::get_last_node() { return last_node; }
 
 void FdMap::trash_last_node() {
+  printf("[FDMAP] trashing (%d,%d)\n", last_node, last_nodefd);
   dead_nodefds[last_node].insert(last_nodefd);
+  nodefd_to_proxyfd.erase(key(last_node, last_nodefd));
   last_node = -1;
   last_nodefd = -1;
 }

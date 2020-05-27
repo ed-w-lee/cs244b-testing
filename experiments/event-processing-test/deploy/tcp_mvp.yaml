@@ -1,0 +1,9 @@
+node_cmd: ./tcp_mvp -o {o_addrs} -a {addr}
+client_cmd: ./test/client.py {addrs}
+val_cmd: ./test/validate.py {addrs}
+clean: ./test/clean.sh {addrs}
+node_dir: /tmp/rafted_tcpmvp_{addr}
+listen_port: 4242
+addr_range:
+ - [20, 121]
+#  - [20, 99]

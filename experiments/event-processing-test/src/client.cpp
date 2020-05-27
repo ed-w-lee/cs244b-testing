@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include <queue>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -66,10 +67,11 @@ void _write_to_proc(pid_t child, char *to_write, char *addr, size_t len) {
 
 namespace ClientFilter {
 
-ClientManager::ClientManager(int client_idx, std::vector<std::string> command,
-                             FdMap &fdmap, bool ignore_stdout)
-    : my_idx(client_idx), command(command), ignore_stdout(ignore_stdout),
-      fdmap(fdmap), sockfds() {
+ClientManager::ClientManager(int client_idx, std::string seed,
+                             std::vector<std::string> command, FdMap &fdmap,
+                             bool ignore_stdout)
+    : my_idx(client_idx), seed(seed), command(command),
+      ignore_stdout(ignore_stdout), fdmap(fdmap), sockfds() {
   printf("[CLIENT] creating with command: %s\n", command[0].c_str());
 
   start_client();
@@ -91,10 +93,13 @@ void ClientManager::start_client() {
       int devNull = open("/dev/null", O_WRONLY);
       dup2(devNull, STDOUT_FILENO);
     } else {
-      char blah[200];
-      strcpy(blah, "/tmp/client_");
-      strcat(blah, std::to_string(my_idx).c_str());
-      int file = open(blah, O_WRONLY | O_CREAT | O_APPEND, 0644);
+      std::ostringstream oss;
+      oss << "/tmp/client_";
+      oss << seed;
+      oss << "_";
+      oss << my_idx;
+      std::string client_out = oss.str();
+      int file = open(client_out.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
       dup2(file, STDOUT_FILENO);
     }
 

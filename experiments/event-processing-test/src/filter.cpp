@@ -212,14 +212,13 @@ Manager::Manager(int my_idx, std::vector<std::string> command,
 void Manager::toggle_node() {
   if (child > 0) {
     stop_node();
+    restore_files();
   } else {
     start_node();
   }
 }
 
 void Manager::start_node() {
-  restore_files();
-
   pid_t pid;
   if ((pid = fork()) == 0) {
     /* If open syscall, trace */

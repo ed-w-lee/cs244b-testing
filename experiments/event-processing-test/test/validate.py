@@ -4,10 +4,12 @@ import json
 import struct
 import os
 
-f_persist = '/tmp/raft_test_persist'
+f_persist = '/tmp/raft_test_persist_'
 f_out = '/tmp/rafted_tcpmvp_'
 
 all_addrs = sys.argv[1:]
+
+f_persist += '_'.join(all_addrs)
 
 if os.path.isfile(f_persist):
   with open(f_persist, 'r') as fin:
