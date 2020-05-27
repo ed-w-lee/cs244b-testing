@@ -55,7 +55,7 @@ def manage_orch(conf, seed, addrs):
   addrs.sort()
   proxy_addrs = addrs[::2]
   node_addrs = addrs[1::2]
-  print('attempting to start orch with seed {}'.format(seed))
+  print('attempting to start orch {} with seed {}'.format(os.getpid(), seed))
   print('proxy_addrs: {}'.format(proxy_addrs))
   print('node_addrs: {}'.format(node_addrs))
 
@@ -105,8 +105,8 @@ def manage_orch(conf, seed, addrs):
       os.setpgid(0, 0)
       # devnull = os.open(os.devnull, os.O_WRONLY)
       out = os.open(trace_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
-      devnull = os.open('/dev/null', os.O_WRONLY)
       os.dup2(out, 1)
+      devnull = os.open('/dev/null', os.O_WRONLY)
       os.dup2(devnull, 2)
       exit(os.execv(command[0], command))
     pid, status = os.waitpid(child_pid, 0)
@@ -167,14 +167,19 @@ def deploy_orchs(conf, seed, parallel, total):
     except OSError as e:
       print("unexpected waitpid error: {}".format(e))
       break
+
+    child_seed, child_addrs = child_status[pid]
     if not os.WIFEXITED(status):
       print("unexpected status, didn't exit: {}".format(status))
       wait_for_children_to_finish()
       exit(1)
     exit_status = os.WEXITSTATUS(status)
+    print('manage_orch {} seed {} exited with {}'.format(
+        pid, child_seed, exit_status))
     if exit_status >= 100:
       # likely manage_orch exited
-      print('manage_orch {} exited unexpectedly: {}'.format(pid, exit_status))
+      print('manage_orch {}, seed {} exited unexpectedly'.format(
+          pid, child_seed, exit_status))
       wait_for_children_to_finish()
       exit(1)
     elif exit_status == 1:
@@ -183,9 +188,6 @@ def deploy_orchs(conf, seed, parallel, total):
       wait_for_children_to_finish()
       exit(1)
 
-    child_seed, child_addrs = child_status[pid]
-    print('manage_orch {} seed {} exited with {}'.format(
-        pid, child_seed, exit_status))
     del child_status[pid]
     for a in child_addrs:
       free_addrs.append(a)

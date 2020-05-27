@@ -709,6 +709,9 @@ int Manager::handle_rename() {
         // TODO can we somehow GC pending ops that don't matter anymore?
         op_count++;
         file_vers[dst_str]++;
+        if (file_pers.find(dst_str) == file_pers.end()) {
+          file_pers[dst_str] = 0;
+        }
         pending_ops[op_count] = {{src_str, file_vers[src_str]},
                                  {dst_str, file_vers[dst_str]}};
         if (file_pending.find(dst_str) == file_pending.end()) {
