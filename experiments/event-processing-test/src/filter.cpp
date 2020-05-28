@@ -456,6 +456,9 @@ Event Manager::to_next_event() {
         case SYS_bind:
           handle_bind();
           continue;
+        case SYS_close:
+          handle_close();
+          continue;
         case SYS_getsockname:
           handle_getsockname();
           continue;
@@ -928,6 +931,29 @@ void Manager::handle_bind() {
   }
 }
 
+void Manager::handle_close() {
+  printf("[FILTER] handling close\n");
+  int status;
+  ptrace(PTRACE_SYSCALL, child, 0, 0);
+  waitpid(child, &status, 0);
+
+  if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+    struct user_regs_struct regs;
+    ptrace(PTRACE_GETREGS, child, 0, &regs);
+    int fd = regs.rdi;
+    if ((int)regs.rax == 0) {
+      if (sockfds.find(fd) != sockfds.end()) {
+        fdmap.node_close_fd(my_idx, fd);
+        // you probably don't need this since the close is idempotent and any
+        // new fd will get re-registered as necessary
+        sockfds.erase(fd);
+      } else if (fds.find(fd) != fds.end()) {
+        fds.erase(fd);
+      }
+    }
+  }
+}
+
 void Manager::handle_getsockname() {
   printf("[FILTER] handling getsockname\n");
   struct user_regs_struct regs;
@@ -978,7 +1004,8 @@ void Manager::handle_accept() {
     struct user_regs_struct regs;
     ptrace(PTRACE_GETREGS, child, 0, &regs);
 
-    if ((int)regs.rax >= 0) {
+    int fd = (int)regs.rax;
+    if (fd >= 0) {
       sockaddr_in from_addr;
       _read_from_proc(child, (char *)&from_addr, (char *)regs.rsi,
                       sizeof(sockaddr_in));
@@ -987,6 +1014,7 @@ void Manager::handle_accept() {
              inet_ntoa(from_addr.sin_addr), ntohs(from_addr.sin_port),
              (int)regs.rax);
       fdmap.node_accept_fd(my_idx, (int)regs.rax, from_addr);
+      sockfds[fd] = true;
     }
   }
 }

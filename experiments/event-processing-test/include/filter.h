@@ -157,7 +157,6 @@ private:
 
   void handle_open(bool at);
   void handle_mknod(int arg);
-  void handle_close();
   int handle_rename();
   void perform_next_op();
   std::string get_backup_filename(std::string file, int version);
@@ -166,6 +165,7 @@ private:
   void handle_socket(); // only track AF_INET, SOCK_STREAM, IPPROTO_IP addresses
                         // (hard to say if this is actually needed)
   void handle_bind();   // redirect bind to some other addr
+  void handle_close();
   void handle_getsockname(); // redirect back to original addr
   void handle_accept();
   int handle_connect();

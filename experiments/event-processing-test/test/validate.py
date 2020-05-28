@@ -5,11 +5,11 @@ import struct
 import os
 
 f_persist = '/tmp/raft_test_persist_'
-f_out = '/tmp/rafted_tcpmvp_'
 
-all_addrs = sys.argv[1:]
+port = sys.argv[1]
+all_addrs = sys.argv[2:]
 
-f_persist += '_'.join(all_addrs)
+f_persist += '_'.join(all_addrs) + '_' + port
 
 if os.path.isfile(f_persist):
   with open(f_persist, 'r') as fin:
@@ -67,8 +67,9 @@ def read_logs(path):
 
 
 def get_state_and_logs(addr):
-  my_state = read_state_file('/tmp/rafted_tcpmvp_{}/state'.format(addr))
-  my_entries = read_logs('/tmp/rafted_tcpmvp_{}/entries'.format(addr))
+  my_state = read_state_file('/tmp/rafted_tcpmvp_{}_{}/state'.format(
+      addr, port))
+  my_entries = read_logs('/tmp/rafted_tcpmvp_{}_{}/entries'.format(addr, port))
   return {'state': my_state, 'entries': my_entries}
 
 

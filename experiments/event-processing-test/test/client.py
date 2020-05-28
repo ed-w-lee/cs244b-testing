@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import socket
 import sys
+import random
 
-all_addrs = sys.argv[1:]
+port = int(sys.argv[1])
+all_addrs = sys.argv[2:]
 
 curr_addr = all_addrs[0]
 read_val = 0
@@ -25,9 +27,10 @@ while True:
   to_send_str = (str(to_send) + '\n').encode()
 
   with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    s.bind(('127.0.0.1', 0))
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(('127.0.0.{}'.format(random.randint(1, 40)), 0))
     try:
-      s.connect((curr_addr, 4242))
+      s.connect((curr_addr, port))
       print('sending', to_send_str)
       s.sendall(to_send_str)
       data = s.recv(1024)

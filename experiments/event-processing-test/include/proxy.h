@@ -14,6 +14,11 @@
 
 #include "fdmap.h"
 
+enum Status {
+  CONNECTING,
+  CONNECTED,
+};
+
 // This ensures requests going to the proxy's address go to the node's address.
 // The proxy will be the one establishing connections to the node on behalf of
 // any request.
@@ -60,6 +65,8 @@ private:
 
   FdMap &fdmap;
 
+  // status of all fds
+  std::unordered_map<int, Status> fd_status;
   // all inbound fds for a given destination node
   std::unordered_map<int, std::set<int>> inbound_fds;
   // fd -> destination node idx

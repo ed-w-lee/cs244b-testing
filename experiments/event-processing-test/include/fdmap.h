@@ -36,7 +36,13 @@ public:
 
   void node_accept_fd(int node, int nodefd, struct sockaddr_in nodeaddr);
 
+  void node_close_fd(int node, int nodefd);
+
   std::pair<int, int> get_related_nodefd(int proxyfd);
+
+  bool is_linked(int proxyfd);
+
+  void proxy_clear_connecting(int proxyfd);
 
   void unregister_proxyfd(int proxyfd);
 
@@ -50,7 +56,11 @@ private:
 
   // node --> (proxyfd, addr)
   std::unordered_map<int, std::vector<std::pair<int, struct sockaddr_in>>>
-      connecting_proxyfds;
+      nodes_to_connecting_proxyfds;
+
+  std::unordered_map<int, int> connecting_proxyfds;
+  // don't track connecting nodefds since that's implicit in last_node and
+  // last_nodefd
 
   // (node, nodefd) --> proxyfd
   // use key(node, nodefd) to get required key
@@ -61,4 +71,8 @@ private:
 
   // node --> nodefd
   std::unordered_map<int, std::unordered_set<int>> dead_nodefds;
+
+  std::unordered_set<int> dead_proxyfds;
+
+  void print_state();
 };

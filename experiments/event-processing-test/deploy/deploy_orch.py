@@ -14,50 +14,65 @@ __location__ = os.path.realpath(
     os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
 
+# converts list of intervals + singular values into a list of singular values
+def enumerate_ranges(range_list):
+  to_ret = []
+  for rng in range_list:
+    if isinstance(rng, list):
+      if len(rng) != 2:
+        return (False, rng)
+      else:
+        for a in range(rng[0], rng[1] + 1):
+          to_ret.append(a)
+    elif isinstance(rng, int):
+      to_ret.append(rng)
+    else:
+      return (False, rng)
+  return (True, sorted(list(set(to_ret))))
+
+
 def validate_config(conf, p):
   print('validating...')
   if not conf:
     return (False, "conf doesn't exist: {}".format(conf))
   fields = [
       'clean', 'node_cmd', 'client_cmd', 'val_cmd', 'addr_range', 'node_dir',
-      'listen_port'
+      'listen_ports'
   ]
   for field in fields:
     if field not in conf or not conf[field]:
       return (False, 'missing field {}'.format(field))
-  addrs = []
-  for rng in conf['addr_range']:
-    if isinstance(rng, list):
-      if len(rng) != 2:
-        return (False, 'range {} has too many fields'.format(rng))
-      else:
-        for a in range(rng[0], rng[1] + 1):
-          addrs.append('127.0.0.{}'.format(a))
-    else:
-      addrs.append('127.0.0.{}'.format(rng))
 
-  addrs = sorted(list(set(addrs)))
-  if len(addrs) < 6 * p:
+  status, addrs = enumerate_ranges(conf['addr_range'])
+  if status == False:
+    return (False, 'unable to parse range {}'.format(addrs))
+  addrs = ['127.0.0.{}'.format(a) for a in addrs]
+
+  status, ports = enumerate_ranges(conf['listen_ports'])
+  if status == False:
+    return (False, 'unable to parse range {}'.format(ports))
+
+  num_full_addrs = len(addrs) * len(ports)
+  if num_full_addrs < 6 * p:
     return (False,
             'too few addrs ({}) for {} parallel clusters, minimum is {}'.format(
-                len(addrs), p, 6 * p))
+                num_full_addrs, p, 6 * p))
   del conf['addr_range']
   conf['addrs'] = addrs
+  del conf['listen_ports']
+  conf['ports'] = ports
   return (True, conf)
 
 
-def manage_orch(conf, seed, addrs):
+def manage_orch(conf, port, seed, addrs, enable_stdout, enable_stderr):
   '''
   Manages an orch instance. Runs in a separate process in case we need to
   communicate with the instance.
   Forks off an orch with the given config and seed, and then waits for completion
   '''
-  addrs.sort()
   proxy_addrs = addrs[::2]
   node_addrs = addrs[1::2]
   print('attempting to start orch {} with seed {}'.format(os.getpid(), seed))
-  print('proxy_addrs: {}'.format(proxy_addrs))
-  print('node_addrs: {}'.format(node_addrs))
 
   format_nodes = {
       'addr0': node_addrs[0],
@@ -65,7 +80,8 @@ def manage_orch(conf, seed, addrs):
       'addr2': node_addrs[2],
       'addrs': ' '.join(node_addrs),
       'o_addrs': '{o_addrs}',
-      'addr': '{addr}'
+      'addr': '{addr}',
+      'port': port,
   }
 
   # start by cleaning up seed just in case
@@ -87,9 +103,9 @@ def manage_orch(conf, seed, addrs):
             --client '{client_cmd}' 
             --val '{val_cmd}'
             --node-dir '{node_dir}'
-            --listen-port '{listen_port}'
+            --listen-port '{port}'
             '''
-  command = command.format(seed=seed, **conf)
+  command = command.format(seed=seed, port=port, **conf)
   command = command.format(**format_nodes)
   command += '''
              --old-addrs '{node_addrs}'
@@ -98,16 +114,18 @@ def manage_orch(conf, seed, addrs):
                         proxy_addrs=' '.join(proxy_addrs))
   command = shlex.split(command)
   trace_file = '/tmp/trace_{}'.format(seed)
-  print('attempting to run {}'.format(command))
+  print('attempting to run {}'.format(' '.join(
+      [shlex.quote(arg) for arg in command])))
   try:
     child_pid = os.fork()
     if child_pid == 0:
       os.setpgid(0, 0)
-      # devnull = os.open(os.devnull, os.O_WRONLY)
-      out = os.open(trace_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
-      os.dup2(out, 1)
-      devnull = os.open('/dev/null', os.O_WRONLY)
-      os.dup2(devnull, 2)
+      if not enable_stdout:
+        out = os.open(trace_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+        os.dup2(out, 1)
+      if not enable_stderr:
+        devnull = os.open('/dev/null', os.O_WRONLY)
+        os.dup2(devnull, 2)
       exit(os.execv(command[0], command))
     pid, status = os.waitpid(child_pid, 0)
     if os.WIFEXITED(status) and os.WEXITSTATUS(status) < 100:
@@ -126,10 +144,11 @@ def manage_orch(conf, seed, addrs):
     return 100
 
 
-def start_new_manage_orch(conf, addrs, seed):
+def start_new_manage_orch(conf, port, addrs, seed, enable_stdout,
+                          enable_stderr):
   child_pid = os.fork()
   if child_pid == 0:
-    exit(manage_orch(conf, seed, addrs))
+    exit(manage_orch(conf, port, seed, addrs, enable_stdout, enable_stderr))
   return child_pid
 
 
@@ -146,18 +165,22 @@ def wait_for_children_to_finish():
       exit(1)
 
 
-def deploy_orchs(conf, seed, parallel, total):
+def deploy_orchs(conf, seed, parallel, total, enable_stdout, enable_stderr):
   print('deploying...')
   num_rounds = 0
   num_completed = 0
-
-  free_addrs = deque(conf['addrs'])
+  # iterator magic from: https://stackoverflow.com/a/5389547
+  addr_sets = list(zip(*[iter(conf['addrs'])] * 6))
+  free_addrs = deque([
+      (port, addr_set) for addr_set in addr_sets for port in conf['ports']
+  ])
   child_status = {}
   for _ in range(min(total, parallel)):
     # take next 6 addrs
-    child_addrs = [free_addrs.popleft() for _ in range(6)]
-    child_pid = start_new_manage_orch(conf, child_addrs, seed)
-    child_status[child_pid] = (seed, child_addrs)
+    port, child_addrs = free_addrs.popleft()
+    child_pid = start_new_manage_orch(conf, port, child_addrs, seed,
+                                      enable_stdout, enable_stderr)
+    child_status[child_pid] = (port, seed, child_addrs)
     num_rounds += 1
     seed += 1
 
@@ -168,7 +191,7 @@ def deploy_orchs(conf, seed, parallel, total):
       print("unexpected waitpid error: {}".format(e))
       break
 
-    child_seed, child_addrs = child_status[pid]
+    child_port, child_seed, child_addrs = child_status[pid]
     if not os.WIFEXITED(status):
       print("unexpected status, didn't exit: {}".format(status))
       wait_for_children_to_finish()
@@ -189,24 +212,25 @@ def deploy_orchs(conf, seed, parallel, total):
       exit(1)
 
     del child_status[pid]
-    for a in child_addrs:
-      free_addrs.append(a)
-    if exit_status == 0:
-      # orch succeeded, just clean up records of this
-      subprocess.run(
-          [os.path.join(__location__, 'cleanup.sh'),
-           str(child_seed)])
-      clean_cmd = shlex.split(
-          conf['clean'].format(addrs=' '.join(sorted(child_addrs)[1::2])))
-      res = subprocess.run(clean_cmd)
+    free_addrs.append((child_port, child_addrs))
+
+    # clean up everything but trace (unless run failed)
+    subprocess.run([os.path.join(__location__, 'cleanup.sh'), str(child_seed)])
+    clean_cmd = shlex.split(conf['clean'].format(
+        port=child_port, addrs=' '.join(sorted(child_addrs)[1::2])))
+    res = subprocess.run(clean_cmd)
+    if exit_status == 0 and not enable_stdout:
+      # since run succeeded, clean up trace as well
+      subprocess.run(['rm', '-f', '/tmp/trace_{}'.format(child_seed)])
 
     time.sleep(1)
     num_completed += 1
     if num_rounds < total:
       num_rounds += 1
-      child_addrs = [free_addrs.popleft() for _ in range(6)]
-      child_pid = start_new_manage_orch(conf, child_addrs, seed)
-      child_status[child_pid] = (seed, child_addrs)
+      port, child_addrs = free_addrs.popleft()
+      child_pid = start_new_manage_orch(conf, port, child_addrs, seed,
+                                        enable_stdout, enable_stderr)
+      child_status[child_pid] = (port, seed, child_addrs)
       seed += 1
     elif num_completed >= total:
       break
@@ -222,16 +246,17 @@ Takes in a yaml file with configuration.
 - {addrN} to get N-th node's address
 - {addrs} to get all addresses
 - {o_addrs} to get all addresses except node to run
+- {port} to get the port nodes are listening on
 ---
 File should have fields:
-node_cmd:    <command to start a node>
-client_cmd:  <command to start a client>
-val_cmd:     <command to validate the files>
-clean:       <command to clean up a cluster>
-node_dir:		 <directory where node stores all hard state>
-listen_port: <port where nodes are listening>
-addr_range:  <list of values for last octet available for use>
-strategy:    ('random_all' | 'random_cons' | 'explore' | 'replay')
+node_cmd:     <command to start a node>
+client_cmd:   <command to start a client>
+val_cmd:      <command to validate the files>
+clean:        <command to clean up a cluster>
+node_dir:	 	  <directory where node stores all hard state>
+listen_ports: <list of ports where nodes are listening>
+addr_range:   <list of values for last octet available for use>
+strategy:     ('random_all' | 'random_cons' | 'explore' | 'replay')
   - 'random_all'  (WIP) randomize hyperparameters
   - 'random_cons' keep consistent, default hyperparameters
   - 'explore'     (WIP) deployer tracks and manages choices
@@ -251,6 +276,12 @@ strategy:    ('random_all' | 'random_cons' | 'explore' | 'replay')
                       type=int,
                       help='number of orchestrations to run total')
   parser.add_argument('--seed', '-s', default=0, type=int, help='starting seed')
+  parser.add_argument('--enable-stderr',
+                      action='store_true',
+                      help='enables printing of orch stderr')
+  parser.add_argument('--enable-stdout',
+                      action='store_true',
+                      help='enables printing of orch stdout')
   args = parser.parse_args()
 
   conf = None
@@ -261,5 +292,11 @@ strategy:    ('random_all' | 'random_cons' | 'explore' | 'replay')
     print(res)
     exit(1)
 
-  print('successfully loaded config:', json.dumps(conf, indent=2))
-  deploy_orchs(conf, args.seed, args.parallel, args.total)
+  to_print = dict(conf)
+  to_print['ports'] = [conf['ports'][0], '...', conf['ports'][-1]
+                      ] if len(conf['ports']) > 1 else [conf['ports'][0]]
+  to_print['addrs'] = [conf['addrs'][0], '...', conf['addrs'][-1]
+                      ] if len(conf['addrs']) > 1 else [conf['addrs'][0]]
+  print('successfully loaded config:', json.dumps(to_print, indent=2))
+  deploy_orchs(conf, args.seed, args.parallel, args.total, args.enable_stdout,
+               args.enable_stderr)

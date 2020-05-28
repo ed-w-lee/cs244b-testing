@@ -115,6 +115,7 @@ std::vector<std::pair<int, int>> Proxy::stop_node(int idx) {
                                  inbound_fds[idx].end());
   std::vector<std::pair<int, int>> related_nodes;
   for (int fd : tmpfds) {
+    fdmap.proxy_clear_connecting(fd);
     unregister_fd(fd, &related_nodes);
   }
   node_alive[idx] = false;
@@ -143,22 +144,32 @@ bool Proxy::has_more(int fd) {
 bool Proxy::allow_next_msg(int fd) {
   printf("[PROXY] sending next message for fd: %d\n", fd);
   auto got = waiting_msgs.find(fd);
-  if (got == waiting_msgs.end()) {
-    printf("[PROXY] could not find fd %d in waiting_msgs\n", fd);
-  } else {
-    std::vector<char> mesg = got->second.front();
-    got->second.pop_front();
-    size_t msg_len = mesg.size();
-    // TODO - think about partial sends
-    if (sendto(got->first, &mesg[0], msg_len, 0, nullptr, 0) < (int)msg_len) {
-      fprintf(stderr, "[PROXY] couldn't send everything or send failed\n");
+  if (fdmap.is_linked(fd)) {
+    if (got == waiting_msgs.end()) {
+      fprintf(stderr, "[PROXY] could not find fd %d in waiting_msgs\n", fd);
       exit(1);
-    }
-    if (got->second.empty() && related_fd[fd] < 0) {
-      // if the client has closed, then we should close the connection with the
-      // node
-      unregister_fd(fd);
-      return true;
+    } else {
+      std::vector<char> mesg = got->second.front();
+      got->second.pop_front();
+      size_t msg_len = mesg.size();
+      // TODO - think about partial sends
+      ssize_t ret = sendto(got->first, &mesg[0], msg_len, 0, nullptr, 0);
+      if (ret < 0) {
+        fprintf(stderr, "[PROXY] send to %d through %d failed due to: %s\n",
+                fd_to_node.at(fd), fd, strerror(errno));
+        exit(1);
+      } else if ((size_t)ret < msg_len) {
+        fprintf(stderr,
+                "[PROXY] couldn't send everything at once (%ld vs. %lu)\n", ret,
+                msg_len);
+        exit(1);
+      }
+      if (got->second.empty() && related_fd[fd] < 0) {
+        // if the client has closed, then we should close the connection with
+        // the node
+        unregister_fd(fd);
+        return true;
+      }
     }
   }
   return false;
@@ -205,10 +216,12 @@ void Proxy::unregister_fd(int fd,
 
       if (waiting_msgs[other_fd].empty()) {
         if (related_nodes != nullptr) {
-          auto tup = fdmap.get_related_nodefd(other_fd);
-          printf("[PROXY] add (%d, %d) to related_nodes\n", tup.first,
-                 tup.second);
-          related_nodes->push_back(tup);
+          if (fdmap.is_linked(other_fd)) {
+            auto tup = fdmap.get_related_nodefd(other_fd);
+            printf("[PROXY] add (%d, %d) to related_nodes\n", tup.first,
+                   tup.second);
+            related_nodes->push_back(tup);
+          }
         }
         unregister_fd(other_fd);
       }
