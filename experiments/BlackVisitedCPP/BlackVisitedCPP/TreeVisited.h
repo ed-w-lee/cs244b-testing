@@ -11,5 +11,5 @@ public:
 
 private:
 	TreeVisited* getChild(const int childId);
-	const int inc();
+	int inc();
 };

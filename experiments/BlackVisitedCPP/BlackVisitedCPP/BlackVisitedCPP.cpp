@@ -1,4 +1,4 @@
-﻿// BlackVisitedCPP.cpp : Defines the entry point for the application.
+// BlackVisitedCPP.cpp : Defines the entry point for the application.
 //
 #include "BlackVisitedCPP.h"
 #include "BlackVisited.h"
@@ -12,8 +12,8 @@ int main()
 	int WINDOW_SIZE = 5;
 	BlackVisited visited(MAX_MESSAGE_ID, WINDOW_SIZE);
 
-	for (int i = 0; i < 1000; i++) {
-		int val = i % 3;
+	for (int i = 0; i < 100; i++) {
+		int val = i % 4;
 		int resCount = visited.putMessage(val);
 		cout << "add: " << val << ", res:" << resCount << endl;
 	}

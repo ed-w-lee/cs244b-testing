@@ -4,7 +4,7 @@
 
 class BlackVisited {
 	int maxMemoryId, slideWindowSize;
-	TreeVisited* rootNode = NULL;
+	TreeVisited* rootNode = 0;
 	std::vector<int> slidingWindow;
 	int currentWindowId;
 	int processedItemsCount = 0;

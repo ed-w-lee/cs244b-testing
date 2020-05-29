@@ -21,12 +21,12 @@ int TreeVisited::addPath(const std::vector<int>& window, int startId, int maxSiz
 
 TreeVisited* TreeVisited::getChild(const int childId)
 {
-	if (idMemory[childId] == NULL) {
+	if (idMemory[childId] == 0) {
 		idMemory[childId] = new TreeVisited(idMaxSize);
 	}
 	return idMemory[childId];
 }
 
-const int TreeVisited::inc() {
+int TreeVisited::inc() {
 	return ++count;
 }
