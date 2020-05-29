@@ -215,10 +215,16 @@ def deploy_orchs(conf, seed, parallel, total, enable_stdout, enable_stderr):
     free_addrs.append((child_port, child_addrs))
 
     # clean up everything but trace (unless run failed)
-    subprocess.run([os.path.join(__location__, 'cleanup.sh'), str(child_seed)])
-    clean_cmd = shlex.split(conf['clean'].format(
-        port=child_port, addrs=' '.join(sorted(child_addrs)[1::2])))
-    res = subprocess.run(clean_cmd)
+    if total > 1:
+      node_addrs = child_addrs[1::2]
+      subprocess.run([
+          os.path.join(__location__, 'cleanup.sh'),
+          str(child_seed), *node_addrs,
+          str(child_port)
+      ])
+      clean_cmd = shlex.split(conf['clean'].format(
+          port=child_port, addrs=' '.join(sorted(child_addrs)[1::2])))
+      res = subprocess.run(clean_cmd)
     if exit_status == 0 and not enable_stdout:
       # since run succeeded, clean up trace as well
       subprocess.run(['rm', '-f', '/tmp/trace_{}'.format(child_seed)])

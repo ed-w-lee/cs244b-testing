@@ -567,10 +567,18 @@ int main(int argc, char **argv) {
       // node_idx = (cnt++) % NUM_NODES;
       printf("[ORCH] Progressing node %d\n", node_idx);
     }
+
     if ((it % PRINT_EVERY) == 0) {
       fprintf(stderr, "[ORCH] Current node: %d\n", node_idx);
       printf("[ORCH] validating\n");
-      if (run_validate(config.seed, config.val_cmd)) {
+      for (auto &mgr : managers) {
+        mgr.setup_validate();
+      }
+      bool res = run_validate(config.seed, config.val_cmd);
+      for (auto &mgr : managers) {
+        mgr.finish_validate();
+      }
+      if (res) {
         fflush(stdout);
         fprintf(stderr, "[ORCH] Validation failed\n\n");
         printf("[ORCH] Validation failed\n\n");
@@ -625,6 +633,7 @@ int main(int argc, char **argv) {
                 non_recv_clients.insert(tup.first);
               }
             }
+            fflush(stdout);
             manager.toggle_node();
             has_sent = false;
             to_continue = false;
@@ -654,7 +663,7 @@ int main(int argc, char **argv) {
           });
           if (ret < 0) {
             num_alive_nodes--;
-            printf("[ORCH STATE] Toggled node before network - %d, %d left\n",
+            printf("[ORCH STATE] Toggled node during write - %d, %d left\n",
                    node_idx, num_alive_nodes);
             fprintf(stderr, "Killed node during write - %d\n", node_idx);
             for (auto &tup : proxy.toggle_node(node_idx)) {
@@ -665,6 +674,7 @@ int main(int argc, char **argv) {
                 non_recv_clients.insert(tup.first);
               }
             }
+            fflush(stdout);
             manager.toggle_node();
             to_continue = false;
             has_sent = false;
@@ -676,7 +686,7 @@ int main(int argc, char **argv) {
           waiting_nodes.insert(node_idx);
           if (should_die(rng)) {
             num_alive_nodes--;
-            printf("[ORCH STATE] Toggled node before network - %d, %d left\n",
+            printf("[ORCH STATE] Toggled node before fsync - %d, %d left\n",
                    node_idx, num_alive_nodes);
             fprintf(stderr, "Killed node before fsync - %d\n", node_idx);
             for (auto &tup : proxy.toggle_node(node_idx)) {
@@ -687,6 +697,7 @@ int main(int argc, char **argv) {
                 non_recv_clients.insert(tup.first);
               }
             }
+            fflush(stdout);
             manager.toggle_node();
             has_sent = false;
             to_continue = false;
@@ -708,8 +719,8 @@ int main(int argc, char **argv) {
           int x = rng();
           if (x % REVIVE_RATE == 0) {
             num_alive_nodes++;
-            printf("[ORCH STATE] Toggled node before network - %d, %d left\n",
-                   node_idx, num_alive_nodes);
+            printf("[ORCH STATE] Revived node - %d, %d left\n", node_idx,
+                   num_alive_nodes);
             fprintf(stderr, "Revived node - %d\n", node_idx);
             manager.toggle_node();
             proxy.toggle_node(node_idx);

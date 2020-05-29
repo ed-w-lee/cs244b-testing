@@ -28,6 +28,7 @@
 #include <functional>
 #include <queue>
 #include <random>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -226,10 +227,13 @@ void Manager::start_node() {
       int devNull = open("/dev/null", O_WRONLY);
       dup2(devNull, STDOUT_FILENO);
     } else {
-      char blah[200];
-      strcpy(blah, "/tmp/filter_");
-      strcat(blah, inet_ntoa(old_addr.sin_addr));
-      int file = open(blah, O_WRONLY | O_CREAT | O_APPEND, 0644);
+      std::ostringstream oss;
+      oss << "/tmp/filter_";
+      oss << inet_ntoa(old_addr.sin_addr);
+      oss << "_";
+      oss << ntohs(old_addr.sin_port);
+      std::string blah = oss.str();
+      int file = open(blah.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
       dup2(file, STDOUT_FILENO);
     }
 
@@ -591,6 +595,37 @@ std::pair<std::string, int> Manager::find_root(std::string file, int version) {
   return {file, version};
 }
 
+void Manager::setup_validate() {
+  printf("[FILTER] starting validation setup\n");
+  restore_map.reserve(file_vers.size());
+  for (const auto &tup : file_vers) {
+    std::ostringstream oss;
+    oss << tup.first;
+    oss << ".__torestore";
+    std::string to_restore = oss.str();
+    printf("[FILTER] Renaming %s to %s\n", tup.first.c_str(),
+           to_restore.c_str());
+
+    if (rename(tup.first.c_str(), to_restore.c_str()) == 0) {
+      restore_map.push_back({tup.first, to_restore});
+      printf("[FILTER] Rename successful\n");
+    }
+  }
+  restore_files();
+}
+
+void Manager::finish_validate() {
+  for (const auto &tup : restore_map) {
+    printf("[FILTER] Restoring %s to %s\n", tup.second.c_str(),
+           tup.first.c_str());
+    if (rename(tup.second.c_str(), tup.first.c_str()) < 0) {
+      fprintf(stderr, "[FILTER] Restore unsuccessful\n");
+      exit(1);
+    }
+  }
+  restore_map.clear();
+}
+
 void Manager::restore_files() {
   printf("[FILTER] starting restore_files\n");
   for (auto &tup : file_vers) {
@@ -853,8 +888,9 @@ int Manager::handle_write(Event ev, std::function<size_t(size_t)> to_write_fn) {
         return -1;
       }
     }
+    return count;
   }
-  return count;
+  return 0;
 }
 
 std::string Manager::get_backup_filename(std::string file, int version) {

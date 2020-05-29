@@ -228,6 +228,9 @@ void FdMap::clear_nodefds(int node) {
 }
 
 void FdMap::print_state() {
+  if (false) {
+    return;
+  }
   printf("[FDMAP STATE] connecting_proxyfds:\n");
   for (const auto &tup : connecting_proxyfds) {
     printf("[FDMAP STATE]  %d -> %d\n", tup.first, tup.second);

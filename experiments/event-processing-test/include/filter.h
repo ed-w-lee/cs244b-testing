@@ -84,6 +84,9 @@ public:
   // has cmd for some arbitrary command for some event
   int allow_event(Event ev);
 
+  void setup_validate();
+  void finish_validate();
+
   void handle_fsync(Event ev, std::function<size_t(size_t)> num_ops_fn);
   int handle_write(Event ev, std::function<size_t(size_t)> to_write_fn);
   void handle_getrandom(std::mt19937 &rng);
@@ -141,6 +144,8 @@ private:
   std::map<size_t,
            std::pair<std::pair<std::string, int>, std::pair<std::string, int>>>
       pending_ops;
+
+  std::vector<std::pair<std::string, std::string>> restore_map;
 
   void start_node();
   void stop_node();

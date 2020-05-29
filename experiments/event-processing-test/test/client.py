@@ -17,9 +17,9 @@ err_count = 0
 it = 0
 while True:
   it += 1
-  if it % 3 == 0:
+  if it % 5 == 0:
     to_send = 0
-  elif it % 3 == 1:
+  elif it % 5 == 1:
     to_send = counter // 2
   else:
     to_send = counter
@@ -31,6 +31,13 @@ while True:
     s.bind(('127.0.0.{}'.format(random.randint(1, 40)), 0))
     try:
       s.connect((curr_addr, port))
+    except OSError as msg:
+      print("failed to connect: {}".format(msg))
+      curr_addr = all_addrs[it % 3]
+      s.close()
+      continue
+
+    try:
       print('sending', to_send_str)
       s.sendall(to_send_str)
       data = s.recv(1024)

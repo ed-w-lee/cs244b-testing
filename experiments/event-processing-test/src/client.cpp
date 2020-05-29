@@ -167,6 +167,7 @@ void ClientManager::stop_client() {
 }
 
 Event ClientManager::to_next_event() {
+  printf("[CLIENT] handling to_next_event\n");
   if (child_state == ST_DEAD)
     return EV_DEAD;
   else if (child_state == ST_RECVING)
@@ -219,6 +220,7 @@ Event ClientManager::to_next_event() {
           return EV_SENDTO;
         case SYS_recvfrom:
           printf("[CLIENT] waiting to recv\n");
+          child_state = ST_RECVING;
           return EV_RECVING;
         default:
           continue;
@@ -308,24 +310,31 @@ bool ClientManager::handle_close() {
 }
 
 void ClientManager::handle_recv() {
+  printf("[CLIENT] handling recv\n");
   int status;
-  ptrace(PTRACE_SYSCALL, child, 0, 0);
-  waitpid(child, &status, 0);
-  if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
-    struct user_regs_struct regs;
-    ptrace(PTRACE_GETREGS, child, 0, &regs);
-    int sendfd = (int)regs.rdi;
-    if (fdmap.is_nodefd_alive(my_idx, sendfd)) {
-      printf("[CLIENT] connection is still alive. allow recv\n");
-    } else {
-      // proxy already closed. we should close this fd
-      printf("[CLIENT] connection is dead. inject failure\n");
+  struct user_regs_struct regs;
+  ptrace(PTRACE_GETREGS, child, 0, &regs);
+  printf("[CLIENT] recving on fd %d\n", (int)regs.rdi);
+
+  fflush(stdout);
+  int sendfd = (int)regs.rdi;
+  if (fdmap.is_nodefd_alive(my_idx, sendfd)) {
+    printf("[CLIENT] connection is still alive. allow recv\n");
+  } else {
+    // proxy already closed. we should close this fd
+    printf("[CLIENT] connection is dead. inject failure\n");
+    regs.orig_rax = -1;
+    ptrace(PTRACE_SYSCALL, child, 0, 0);
+    waitpid(child, &status, 0);
+    if (WIFSTOPPED(status) && WSTOPSIG(status) & 0x80) {
+      ptrace(PTRACE_GETREGS, child, 0, &regs);
       regs.rax = -((long)ETIMEDOUT);
-      ptrace(PTRACE_SETREGS, child, 0, &regs);
+    } else {
+      fprintf(stderr, "[CLIENT] did not get subsequent syscall\n");
+      exit(1);
     }
   }
-  fprintf(stderr, "[CLIENT] did not get subsequent syscall\n");
-  exit(1);
+  fflush(stdout);
 }
 
 void ClientManager::handle_socket() {
