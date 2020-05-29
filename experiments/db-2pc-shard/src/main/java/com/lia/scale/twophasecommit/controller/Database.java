@@ -15,7 +15,6 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -30,6 +29,9 @@ public class Database {
 
     @Value("${server.port}")
     public int SERVER_PORT;
+
+    @Value("${server.address}")
+    public String SERVER_ADDRESS;
 
     @Value("${main.nodes}")
     public String SERVER_LIST;
@@ -86,13 +88,13 @@ public class Database {
             ObjectMapper objectMapper = new ObjectMapper();
             String messageToApply = objectMapper.writeValueAsString(sendMessage);
             System.out.printf("Message: VOTE ALL_START - %s.\n", currentTransactionIdString);
-            if (putToUrlAll("localhost", "/vote", messageToApply, false)){
+            if (putToUrlAll("/vote", messageToApply, false)){
                 System.out.printf("Message: VOTE ALL_SUCCESS - %s\n", currentTransactionIdString);
                 System.out.printf("Message: COMMIT ALL_START - %s.\n", currentTransactionIdString);
-                if (putToUrlAll("localhost", "/commit", messageToApply, false)){
+                if (putToUrlAll("/commit", messageToApply, false)){
                     System.out.printf("Message: COMMIT ALL_SUCCESS - %s\n", currentTransactionIdString);
                     System.out.printf("Message: APPLY ALL_START - %s\n", currentTransactionIdString);
-                    if (putToUrlAll("localhost", "/apply", messageToApply, true)){
+                    if (putToUrlAll("/apply", messageToApply, true)){
                         System.out.printf("Message: ALL_APPLY SUCCESS - %s\n", currentTransactionIdString);
                         response = new ResponseEntity(HttpStatus.OK);
                     } else {
@@ -100,12 +102,12 @@ public class Database {
                     }
                 } else {
                     System.out.printf("Warning: ALL_COMMIT FAIL - %s\n", currentTransactionIdString);
-                    putToUrlAll("localhost", "/abort", messageToApply, true);
+                    putToUrlAll( "/abort", messageToApply, true);
                     System.out.printf("Warning: ABORT SENT - %s\n", currentTransactionIdString);
                 }
             } else {
                 System.out.printf("Warning: ALL_VOTE FAIL - %s\n", currentTransactionIdString);
-                putToUrlAll("localhost", "/abort", messageToApply, true);
+                putToUrlAll("/abort", messageToApply, true);
                 System.out.printf("Warning: ABORT SENT - %s\n", currentTransactionIdString);
             }
 
@@ -263,15 +265,18 @@ public class Database {
         }
     }
 
-    private boolean putToUrlAll(String host, String com, String message, boolean retryForever) throws Exception{
+    private boolean putToUrlAll(String com, String message, boolean retryForever) throws Exception{
         boolean res = false;
-        for (String port : SERVER_LIST.split(",")){
-            int nextPort = Integer.valueOf(port);
-            res = (putToUrl(host, nextPort, com, message, retryForever).getStatusCode() == HttpStatus.OK);
+        String[] serverArray = SERVER_LIST.split(",");
+        for (String hostPortString : serverArray){
+            String[] hostPort = hostPortString.split(":");
+            int nextPort = Integer.valueOf(hostPort[1]);
+            String nextHost = hostPort[0];
+            res = (putToUrl(nextHost, nextPort, com, message, retryForever).getStatusCode() == HttpStatus.OK);
 
             if (!res){
                 System.out.printf("Warning: last message %s.\n", message);
-                System.out.printf("Warning: last host %s com %s port %d.\n", host, com, nextPort);
+                System.out.printf("Warning: last host %s com %s port %d.\n", nextHost, com, nextPort);
                 System.out.printf("Critical: Cannot retry last retryForever request, going down.\n");
                 return false;
                 //Runtime.getRuntime().exit(0);

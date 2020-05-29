@@ -71,26 +71,13 @@ public class HttpDataProxy extends Thread  {
 
             final int serverPort = server.getPort();
 
+            //System.out.printf("%s -> %s\n", sClient.getInetAddress().toString(), server.getInetAddress().toString());
             new Thread() {
                 public void run() {
                     int bytes_read;
                     try {
                         String[] parsedComTrId = null;
                         while ((bytes_read = inFromClient.read(request)) != -1){
-                            /*try{
-                                byte[] raftMessBytes = Arrays.copyOfRange(request,0,bytes_read);
-                                Raft.Entry raftMessage = Raft.Entry.parseFrom(raftMessBytes);
-                                System.out.printf("RAFT message:%s\n", raftMessage.toString());
-                            } catch (Exception e) {
-                                String requestString = new String(request,0, bytes_read);
-                                System.out.printf("RAFT message fail parse:%d: %s\n", threadId, requestString);
-                            }*/
-                            //REQUEST:11: GET /2pc
-                            //REQUEST:11: PUT /2pc HTTP/1.1
-                            //REQUEST:13: {"a":"1","trid":"24001"}
-                            //REQUEST:13: PUT /vote HTTP/1.1
-                            //REQUEST:13: PUT /commit HTTP/1.1
-                            //REQUEST:13: PUT /apply HTTP/1.1
 
                             int[] sleepFromVisited = VisitedTri.EMPTY_RESPONSE;
                             String requestString = new String(request,0, bytes_read);
@@ -104,7 +91,7 @@ public class HttpDataProxy extends Thread  {
                                 //System.out.println(Arrays.toString(message32bytes));
                                 if (visitedMode.equals(VISITED_EXP)) {
                                     sleepFromVisited = VisitedTri.add(request,0, bytes_read);
-                                    sleepFromVisited[1] *= sleepFromVisited[1];
+                                    //sleepFromVisited[1] *= Math.sqrt(sleepFromVisited[1]);
                                 } else if (visitedMode.equals(VISITED_NO)) {
                                     sleepFromVisited = VisitedTri.add(request,0, bytes_read);
                                     sleepFromVisited[1] = 0;
@@ -115,27 +102,6 @@ public class HttpDataProxy extends Thread  {
                             String com = "";
                             String trid = "";
                             String part = "";
-/*TODO: need to make totally black box visited
-                            if (parsedComTrId == null){
-                                parsedComTrId = new String[2];
-                            }
-                            if (parsePartTrId(requestString, parsedComTrId)){
-                                com = parsedComTrId[0];
-                                trid = parsedComTrId[1];
-                                parsedComTrId = new String[2];
-
-                                part = String.format("%d,%s", serverPort, com);
-                                //String part = com;
-                                if ( visitedMode.equals(VISITED_EXP) ){
-                                    sleepFromVisited = VisitedTri.add(part);
-                                    sleepFromVisited *= sleepFromVisited;
-                                } else if ( visitedMode.equals(VISITED_TREE) ){
-                                    sleepFromVisited = VisitedTree.addSuccess(part, trid, true);
-                                    sleepFromVisited *= sleepFromVisited;
-                                }
-                            }
-
- */
                             // TODO: respond to server/delay/skip?
 
                             if (sleepFromVisited[1] > timeCrashTrashhold){
@@ -143,10 +109,10 @@ public class HttpDataProxy extends Thread  {
                                 if (visitedMode.equals(VISITED_EXP)) {
                                     part = "internalcrash";
                                     sleepFromVisited = VisitedTri.add(part.getBytes(), 0, part.length());
-                                    sleepFromVisited[1] *= sleepFromVisited[1];
+                                    //sleepFromVisited[1] *= Math.sqrt(sleepFromVisited[1]);
                                 } else if ( visitedMode.equals(VISITED_TREE) && trid.length() > 0){
                                     //sleepFromVisited = VisitedTree.addSuccess(part, trid, false);
-                                    sleepFromVisited[1] *= sleepFromVisited[1];
+                                    //sleepFromVisited[1] *= Math.sqrt(sleepFromVisited[1]);
                                 }
                                 Thread.sleep(sleepFromVisited[1]);
                                 outToServer.close();
@@ -155,9 +121,8 @@ public class HttpDataProxy extends Thread  {
                                 Thread.sleep(sleepFromVisited[1]);
                             }
                             if (sleepFromVisited[0] >= 0){
-
                                 long minutesFromStart = Duration.between(startDateTime, ZonedDateTime.now()).toMinutes();
-                                System.out.printf("%d:%d:%d:%d\n", minutesFromStart, serverPort, sleepFromVisited[0], sleepFromVisited[1]);
+                                System.out.printf("%d:%s:%d:%d\n", minutesFromStart, SERVER_URL.substring(8,10), sleepFromVisited[0], sleepFromVisited[1]);
                             }
                             outToServer.write(request, 0, bytes_read);
                             outToServer.flush();

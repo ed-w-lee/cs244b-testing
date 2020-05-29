@@ -5,6 +5,7 @@ import java.io.BufferedReader;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.HashMap;
@@ -12,6 +13,8 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class Application {
+    private static final int MAX_CONNECTIONS = 1000;
+
     public static void main(String[] args) {
         try {
             // try proxy request
@@ -23,17 +26,18 @@ public class Application {
 
             //System.out.println("Message: START Listening for connection on port 14001");
             try {
-                String host = "localhost";
-                for (String remoteLocal : params.get("-p").split("_")){
+                String[] remoteLocalArr = params.get("-p").split(":");
+                final int localport = Integer.valueOf(remoteLocalArr[0]);
+                final int remoteport = Integer.valueOf(remoteLocalArr[1]);
+                for (String remoteLocal : params.get("-s").split(",")){
                     // Print a start-up message
-                    String[] remoteLocalArr = remoteLocal.split(":");
-                    final int localport = Integer.valueOf(remoteLocalArr[0]);
-                    final int remoteport = Integer.valueOf(remoteLocalArr[1]);
                     new Thread() {
                         public void run() {
                             try{
+                                String host = "127.0.0." + remoteLocal;
                                 System.out.println("Starting proxy for " + host + ":" + remoteport + " on port " + localport);
-                                ServerSocket server = new ServerSocket(localport);
+                                InetAddress localAddress = InetAddress.getByName(host);
+                                ServerSocket server = new ServerSocket( localport, MAX_CONNECTIONS, localAddress);
                                 while (true) {
                                     new HttpDataProxy(server.accept(), host, remoteport, params);
                                     //System.out.println("NEW ACCEPT");
@@ -48,8 +52,9 @@ public class Application {
             } catch (Exception e) {
                 System.err.println(e);
                 System.err.println("Usage: java ReverseProxyPlayer "
-                        + "-p 14001:24001_14002:24002_14003:24003 "
-                        + "-v {rnd,exp}");
+                        + "-p 14001:24001 "
+                        + "-s 10,11,12 "
+                        + "-v {no,rnd,exp,tree}");
             }
         } catch (Exception e){
             e.printStackTrace();

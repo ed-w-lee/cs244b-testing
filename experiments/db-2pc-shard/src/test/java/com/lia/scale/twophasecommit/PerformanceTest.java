@@ -33,9 +33,10 @@ public class PerformanceTest {
         int numberOfUsers = 200;
 
         int startID = 0, endID = 10000;
-        String host = "localhost";
+        String host = "127.0.0.";
         String com = "/2pc";
-        int startPort = 24001;
+        int startServer = 10;
+        int port = 14001;
         int serverNumber = 3;
         Thread[] activeUsers = new Thread[numberOfUsers];
         for (int userId = 0; userId < numberOfUsers; userId++){
@@ -48,13 +49,16 @@ public class PerformanceTest {
                         Map<String, String> localMemory = new HashMap<>();
                         for (int i = startID; i < endID; i++){
                             localMemory.put(keyName,String.valueOf(i));
-                            int setPort = startPort + (i%serverNumber);
-                            int readPort = startPort + ((i+1)%serverNumber);
-                            ResponseEntity res = dbNode1.putToUrl(host, setPort, com, map2json(localMemory), true);
-                            assertThat(res.getStatusCode().value()).isEqualTo(200);
-                            String valOnServer = dbNode1.getValFromServer(host, readPort, com, keyName);
-                            //System.out.printf("%d:  W%dR%d, %s <- %d -> %s\n", threadId, setPort, readPort, keyName, i, valOnServer);
-                            assertThat(Integer.valueOf(valOnServer)).isEqualTo(i);
+                            int setServer = startServer + (i%serverNumber);
+                            int readServer = startServer + ((i+1)%serverNumber);
+                            ResponseEntity res = dbNode1.putToUrl(host + setServer, port, com, map2json(localMemory), true);
+                            int reponseCodeId = res.getStatusCode().value();
+                            assertThat(reponseCodeId==200 || reponseCodeId == 304).isTrue();
+                            if ( reponseCodeId == 200 ){
+                                String valOnServer = dbNode1.getValFromServer(host + readServer, port, com, keyName);
+                                //System.out.printf("%d:  W%sR%s, %s <- %d -> %s\n", threadId, host + setServer, host + readServer, keyName, i, valOnServer);
+                                assertThat(Integer.valueOf(valOnServer)).isEqualTo(i);
+                            }
                         }
                     } catch (Exception e) {
                         System.out.println("MAIN THREAD Exception");

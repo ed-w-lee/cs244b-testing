@@ -36,7 +36,7 @@ public class VisitedTri {
     public static int[] add(byte[] inData, int offset, int bytes_read)  {
         int nowCount = 0;
         int id = addBlackbox(inData, offset, bytes_read);
-        if (id > 0){
+        if (id >= 0){
             synchronized (singleton) {
                 nowCount = visitedTri[last4][last3][last2][last1][id]++;
                 last4 = last3;
