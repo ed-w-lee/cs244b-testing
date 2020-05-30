@@ -193,8 +193,11 @@ const std::string Manager::suffix = ".__bk";
 Manager::Manager(int my_idx, std::vector<std::string> command,
                  sockaddr_in old_addr, sockaddr_in new_addr, FdMap &fdmap,
                  std::string prefix, bool ignore_stdout)
-    : my_idx(my_idx), command(command), ignore_stdout(ignore_stdout),
-      fdmap(fdmap), old_addr(old_addr), new_addr(new_addr), prefix(prefix) {
+    : my_idx(my_idx), command(command), vtime{244244, 244244244},
+      ignore_stdout(ignore_stdout), child_state(ST_DEAD), fdmap(fdmap),
+      old_addr(old_addr), new_addr(new_addr), sockfds(), prefix(prefix), fds(),
+      file_vers(), file_pers(), file_pending(), rename_srcs(), ops_done(0),
+      op_count(0), pending_ops(), restore_map() {
   printf("[FILTER] creating with command: ");
   for (auto str : command) {
     printf("%s ", str.c_str());
@@ -204,8 +207,8 @@ Manager::Manager(int my_idx, std::vector<std::string> command,
   // // recursively clear anything in prefix
   // _remove_dir(prefix.c_str());
 
-  vtime.tv_sec = 244244;
-  vtime.tv_nsec = 244244244;
+  // vtime.tv_sec = 244244;
+  // vtime.tv_nsec = 244244244;
 
   start_node();
 }
@@ -1149,7 +1152,13 @@ void Manager::handle_clock_gettime() {
   }
 }
 
-void Manager::handle_getrandom(std::mt19937 &rng) {
+void Manager::handle_getrandom(Event ev,
+                               std::function<void(void *, size_t)> fill_fn) {
+  if (ev != EV_RANDOM) {
+    fprintf(stderr,
+            "[FILTER] handle_getrandom should only be called when EV_RANDOM\n");
+    exit(1);
+  }
   printf("[FILTER] handling getrandom\n");
   child_state = ST_STOPPED;
 
@@ -1164,9 +1173,7 @@ void Manager::handle_getrandom(std::mt19937 &rng) {
     if (ret > 0) {
       // generate <ret> pseudo-random bytes
       char buf[ret + 4];
-      for (int i = 0; i < ret; i += 4) {
-        *(int *)(buf + i) = rng();
-      }
+      fill_fn(buf, ret);
       _write_to_proc(child, buf, (char *)regs.rdi, ret);
     }
   }
