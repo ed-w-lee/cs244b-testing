@@ -38,8 +38,6 @@ const uint32_t syscalls_intercept[] = {
     SYS_syncfs,
     SYS_fsync,
     SYS_fdatasync,
-    // SYS_stat,
-    // SYS_mknod,
     // network-related
     SYS_socket,
     SYS_bind,
@@ -89,7 +87,7 @@ public:
 
   void handle_fsync(Event ev, std::function<size_t(size_t)> num_ops_fn);
   int handle_write(Event ev, std::function<size_t(size_t)> to_write_fn);
-  void handle_getrandom(std::mt19937 &rng);
+  void handle_getrandom(Event ev, std::function<void(void *, size_t)> fill_fn);
 
   void toggle_node();
 

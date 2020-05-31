@@ -37,36 +37,15 @@
 #include <vector>
 
 #include "client.h"
+#include "decide.h"
 #include "fdmap.h"
 #include "filter.h"
 #include "proxy.h"
 
+static const int NUM_ITERS = 20000;
+static const int PRINT_EVERY = 100;
 static const int NUM_NODES = 3;
 static const int NUM_CLIENTS = 3;
-static const bool DEATH_ENABLED = true;
-static const int DEATH_RATE = 400;
-static const int REVIVE_RATE = 30;
-static const int CLIENT_DEATH_RATE = 100;
-static const int PRINT_EVERY = 100;
-// prob(rename all before fsync) = 1/FSYNC_RENAME_RATE
-static const int FSYNC_RENAME_RATE = 5;
-// prob(delay message) = 1/MSG_DELAY_RATE
-static const int MSG_DELAY_RATE = 5;
-// percent chance node 0 runs first for a given "round"
-static const int PRIMARY_PC = 94;
-// percent chance node 1 runs first for a given "round"
-static const int SECONDARY_PC = 3;
-static const int NUM_ITERS = 20000;
-
-// maintain same rng counts regardless of death enabled or not
-static bool should_die(std::mt19937 &rng) {
-  if (DEATH_ENABLED) {
-    return (rng() % DEATH_RATE) == 0;
-  } else {
-    rng();
-    return false;
-  }
-}
 
 static int run_validate(std::string seed, std::vector<std::string> command) {
   printf("[FILTER] Running validation command: ");
@@ -373,9 +352,7 @@ int main(int argc, char **argv) {
     exit(1);
   }
 
-  std::seed_seq seed(config.seed.begin(), config.seed.end());
-  std::mt19937 rng(seed);
-
+  Decider *decider = new RRandDecider(config.seed);
   FdMap fdmap(NUM_NODES, NUM_CLIENTS);
 
   std::vector<sockaddr_in> newaddrs;
@@ -517,56 +494,8 @@ int main(int argc, char **argv) {
       }
     }
 
-    int node_idx;
-    const int FACTOR = 2;
-    size_t tot_avail_nodes =
-        FACTOR * waiting_nodes.size() + non_recv_clients.size();
-    if (tot_avail_nodes > 0 && num_alive_nodes > 0) {
-      size_t to_run = rng() % tot_avail_nodes;
-      if (to_run < FACTOR * waiting_nodes.size()) {
-        to_run %= waiting_nodes.size();
-        node_idx = *std::next(waiting_nodes.begin(), to_run);
-        printf("[ORCH] Progressing node %d / %lu nodes / %lu clients\n",
-               node_idx, waiting_nodes.size(), non_recv_clients.size());
-      } else {
-        to_run -= FACTOR * waiting_nodes.size();
-        node_idx = *std::next(non_recv_clients.begin(), to_run);
-        printf("[ORCH] Progressing client %d / %lu nodes / %lu clients\n",
-               node_idx, waiting_nodes.size(), non_recv_clients.size());
-      }
-    } else {
-      // everything is currently polling or dead
-      int min_cnt = INT32_MAX;
-      int min_idx = -1;
-      int num_mins = 0;
-      for (int i = 0; i < NUM_NODES; i++) {
-        if (num_polls[i] < min_cnt) {
-          min_idx = i;
-          min_cnt = num_polls[i];
-          num_mins = 0;
-        }
-
-        if (num_polls[i] == min_cnt) {
-          num_mins++;
-        }
-      }
-      int prop = rng() % 100;
-      printf("[ORCH] num_mins: %d for min_cnt: %d\n", num_mins, min_cnt);
-      if (num_mins == NUM_NODES) {
-        if (prop < PRIMARY_PC) {
-          node_idx = 0;
-        } else if (prop < SECONDARY_PC) {
-          node_idx = 1;
-        } else {
-          node_idx = 2;
-        }
-      } else {
-        node_idx = min_idx;
-      }
-      num_polls[node_idx]++;
-      // node_idx = (cnt++) % NUM_NODES;
-      printf("[ORCH] Progressing node %d\n", node_idx);
-    }
+    int node_idx = decider->get_next_node(num_alive_nodes, waiting_nodes,
+                                          non_recv_clients);
 
     if ((it % PRINT_EVERY) == 0) {
       fprintf(stderr, "[ORCH] Current node: %d\n", node_idx);
@@ -595,7 +524,7 @@ int main(int argc, char **argv) {
         printf("[ORCH] Found %lu fds with waiting messages\n", send_fds.size());
         int count = 0;
         for (const auto &x : send_fds) {
-          if (rng() % MSG_DELAY_RATE != 0) {
+          if (decider->should_send_msg()) {
             if (proxy.allow_next_msg(x))
               count++;
             count++;
@@ -611,7 +540,9 @@ int main(int argc, char **argv) {
         Filter::Event ev = manager.to_next_event();
         switch (ev) {
         case Filter::EV_RANDOM: {
-          manager.handle_getrandom(rng);
+          manager.handle_getrandom(ev, [&](void *buf, size_t buflen) -> void {
+            decider->fill_random(buf, buflen);
+          });
           to_continue = true;
           has_sent = false;
           break;
@@ -620,7 +551,8 @@ int main(int argc, char **argv) {
         case Filter::EV_SENDTO: {
           proxy.set_alive(node_idx);
           waiting_nodes.insert(node_idx);
-          if (should_die(rng)) {
+          if ((ev == Filter::EV_CONNECT && decider->should_fail_on_connect()) ||
+              (ev == Filter::EV_SENDTO && decider->should_fail_on_send())) {
             num_alive_nodes--;
             printf("[ORCH STATE] Toggled node before network - %d, %d left\n",
                    node_idx, num_alive_nodes);
@@ -655,7 +587,7 @@ int main(int argc, char **argv) {
           proxy.set_alive(node_idx);
           waiting_nodes.insert(node_idx);
           int ret = manager.handle_write(ev, [&](size_t max_write) -> size_t {
-            if (should_die(rng)) {
+            if (decider->should_fail_on_write()) {
               return max_write / 2;
             } else {
               return max_write;
@@ -684,7 +616,7 @@ int main(int argc, char **argv) {
         case Filter::EV_FSYNC: {
           proxy.set_alive(node_idx);
           waiting_nodes.insert(node_idx);
-          if (should_die(rng)) {
+          if (decider->should_fail_on_fsync()) {
             num_alive_nodes--;
             printf("[ORCH STATE] Toggled node before fsync - %d, %d left\n",
                    node_idx, num_alive_nodes);
@@ -703,7 +635,7 @@ int main(int argc, char **argv) {
             to_continue = false;
           } else {
             manager.handle_fsync(ev, [&](size_t max_ops) -> size_t {
-              if (rng() % FSYNC_RENAME_RATE == 0) {
+              if (decider->should_rename_on_fsync()) {
                 return max_ops;
               } else {
                 return 0;
@@ -716,8 +648,7 @@ int main(int argc, char **argv) {
         }
         case Filter::EV_DEAD: {
           waiting_nodes.erase(node_idx);
-          int x = rng();
-          if (x % REVIVE_RATE == 0) {
+          if (decider->should_revive()) {
             num_alive_nodes++;
             printf("[ORCH STATE] Revived node - %d, %d left\n", node_idx,
                    num_alive_nodes);
@@ -754,7 +685,10 @@ int main(int argc, char **argv) {
       }
       case ClientFilter::EV_CONNECT:
       case ClientFilter::EV_SENDTO: {
-        if (should_die(rng)) {
+        if ((ev == ClientFilter::EV_CONNECT &&
+             decider->c_should_fail_on_connect()) ||
+            (ev == ClientFilter::EV_SENDTO &&
+             decider->c_should_fail_on_send())) {
           fprintf(stderr, "Killed client - %d\n", node_idx);
           printf("[ORCH STATE] Toggled client - %d\n", node_idx);
           proxy.toggle_node(node_idx);

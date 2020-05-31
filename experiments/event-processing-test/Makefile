@@ -5,7 +5,7 @@ SRC_DIR := src
 TEST_DIR := test
 HDR_DIR := include
 
-LIBS := filter proxy fdmap client
+LIBS := filter proxy fdmap client decide
 HDRS := $(addprefix $(HDR_DIR)/,$(addsuffix .h,$(LIBS)))
 SRCS := $(addprefix $(SRC_DIR)/,$(addsuffix .cpp,$(LIBS)))
 OBJS := $(addsuffix .o,$(LIBS))
