@@ -45,5 +45,7 @@ cleantest:
 	rm -f /tmp/client*
 	rm -rf /tmp/filter*
 	rm -f /tmp/trace
+	rm -f /tmp/trace_*
+	rm -f /tmp/replay_orch_*
 
 .PHONY: all clean cleantest

@@ -91,7 +91,7 @@ static void kill_children() {
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
 }
 
-enum orch_mode { UNINIT, RAND, VISITED };
+enum orch_mode { UNINIT, RAND, REPLAY, VISITED };
 
 enum config_field {
   SPECIFIER,
@@ -104,6 +104,7 @@ enum config_field {
   NEW_ADDRS,
   NODE_DIR,
   LISTEN_PORT,
+  REPLAY_FILE,
 };
 
 struct orch_config {
@@ -116,6 +117,7 @@ struct orch_config {
   std::vector<std::string> new_addrs;
   std::string node_dir;
   in_port_t listen_port;
+  std::string replay_file;
 };
 
 bool validate_args(int argc, char **argv, orch_config &config) {
@@ -150,6 +152,8 @@ bool validate_args(int argc, char **argv, orch_config &config) {
           next_arg = NODE_DIR;
         } else if (actual_spec.compare("listen-port") == 0) {
           next_arg = LISTEN_PORT;
+        } else if (actual_spec.compare("replay-file") == 0) {
+          next_arg = REPLAY_FILE;
         } else {
           fprintf(stderr, "unexpected specifier %s\n", actual_spec.c_str());
           return false;
@@ -161,6 +165,8 @@ bool validate_args(int argc, char **argv, orch_config &config) {
       next_arg = SPECIFIER;
       if (arg.compare("rand") == 0) {
         config.mode = orch_mode::RAND;
+      } else if (arg.compare("replay") == 0) {
+        config.mode = orch_mode::REPLAY;
       } else if (arg.compare("visited") == 0) {
         config.mode = orch_mode::VISITED;
       } else {
@@ -258,14 +264,29 @@ bool validate_args(int argc, char **argv, orch_config &config) {
       }
       break;
     }
+    case REPLAY_FILE: {
+      next_arg = SPECIFIER;
+      if (arg.length() == 0) {
+        fprintf(stderr, "replay-file should not be empty\n");
+        return false;
+      } else {
+        config.replay_file = arg;
+      }
+      break;
+    }
     }
   }
 
-  if (config.mode == orch_mode::UNINIT || config.seed.empty() ||
-      config.node_cmd.empty() || config.client_cmd.empty() ||
-      config.val_cmd.empty() || config.node_dir.empty() ||
-      config.listen_port == 0) {
+  if (config.mode == orch_mode::UNINIT || config.node_cmd.empty() ||
+      config.client_cmd.empty() || config.val_cmd.empty() ||
+      config.node_dir.empty() || config.listen_port == 0 ||
+      config.replay_file.empty()) {
     fprintf(stderr, "missing some arg\n");
+    return false;
+  }
+  if ((config.mode == orch_mode::RAND || config.mode == orch_mode::VISITED) &&
+      config.seed.empty()) {
+    fprintf(stderr, "rand/visited mode requires seed\n");
     return false;
   }
   for (const auto &new_addr : config.new_addrs) {
@@ -307,6 +328,7 @@ bool validate_args(int argc, char **argv, orch_config &config) {
   printf("]\n");
   printf("       - node_dir: \"%s\"\n", config.node_dir.c_str());
   printf("       - listen_port: %hu\n", config.listen_port);
+  printf("       - replay_file: %s\n", config.replay_file.c_str());
 
   return true;
 }
@@ -329,12 +351,13 @@ int main(int argc, char **argv) {
       {},                // new_addrs
       "",                // node_dir
       0,                 // listen_port
+      "",
   };
   if (!validate_args(argc, argv, config)) {
     // too lazy to do proper arg parsing
     fprintf(stderr,
             "Usage: %s\n"
-            "--mode (rand|visited) \n"
+            "--mode (rand|replay|visited) \n"
             "--seed <seed> \n"
             "--node \"<prog> <args>\"\n"
             "\t- allows {addr} for node's addr "
@@ -346,13 +369,31 @@ int main(int argc, char **argv) {
             "--node-dir \"<dir>\"\n"
             "\t- allows {addr} for node's addr\n"
             "--listen-port <port>\n"
+            "--replay-file <file>\n"
+            "\t- if mode=replay, replay <file>. otherwise create replayable "
+            "trace in <file>\n"
             "\n"
-            "commands should be delimited by #, not spaces",
+            "commands should be delimited by #, not spaces\n",
             argv[0]);
     exit(1);
   }
 
-  Decider *decider = new RRandDecider(config.seed);
+  // needed for the entire lifetime of the program, so just let it die
+  Decider *decider;
+  switch (config.mode) {
+  case orch_mode::RAND: {
+    decider = new RRandDecider(config.seed, config.replay_file);
+    break;
+  }
+  case orch_mode::REPLAY: {
+    decider = new ReplayDecider(config.replay_file);
+    break;
+  }
+  default: {
+    fprintf(stderr, "unsupported mode\n");
+    exit(1);
+  }
+  }
   FdMap fdmap(NUM_NODES, NUM_CLIENTS);
 
   std::vector<sockaddr_in> newaddrs;
@@ -474,7 +515,9 @@ int main(int argc, char **argv) {
     }
 
     {
+      printf("[ORCH] printing state\n");
       proxy.print_state();
+      printf("[ORCH] finished printing state\n");
       // jank way to send client responses
       for (int i = 0; i < NUM_CLIENTS; i++) {
         int idx = i + ClientFilter::CLIENT_OFFS;

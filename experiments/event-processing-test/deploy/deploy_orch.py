@@ -64,7 +64,14 @@ def validate_config(conf, p):
   return (True, conf)
 
 
-def manage_orch(conf, port, seed, addrs, enable_stdout, enable_stderr):
+def manage_orch(conf,
+                port,
+                seed,
+                addrs,
+                enable_stdout,
+                enable_stderr,
+                mode='rand',
+                input_file='/tmp/replay_orch_{seed}'):
   '''
   Manages an orch instance. Runs in a separate process in case we need to
   communicate with the instance.
@@ -97,15 +104,23 @@ def manage_orch(conf, port, seed, addrs, enable_stdout, enable_stderr):
       shlex.split(conf['client_cmd'].format(**format_nodes)))
   conf['val_cmd'] = delim.join(
       shlex.split(conf['val_cmd'].format(**format_nodes)))
+  input_file = input_file.format(seed=seed)
   command = '''
-            ./orch --mode rand --seed '{seed}'
+            ./orch 
+            --mode '{mode}'
+            --seed '{seed}'
             --node '{node_cmd}' 
             --client '{client_cmd}' 
             --val '{val_cmd}'
             --node-dir '{node_dir}'
             --listen-port '{port}'
+            --replay-file '{input_file}'
             '''
-  command = command.format(seed=seed, port=port, **conf)
+  command = command.format(mode=mode,
+                           seed=seed,
+                           port=port,
+                           input_file=input_file,
+                           **conf)
   command = command.format(**format_nodes)
   command += '''
              --old-addrs '{node_addrs}'
@@ -226,8 +241,8 @@ def deploy_orchs(conf, seed, parallel, total, enable_stdout, enable_stderr):
           port=child_port, addrs=' '.join(sorted(child_addrs)[1::2])))
       res = subprocess.run(clean_cmd)
     if exit_status == 0 and not enable_stdout:
-      # since run succeeded, clean up trace as well
-      subprocess.run(['rm', '-f', '/tmp/trace_{}'.format(child_seed)])
+      # since run succeeded, clean up replay trace as well
+      subprocess.run(['rm', '-f', '/tmp/replay_orch_{}'.format(child_seed)])
 
     time.sleep(1)
     num_completed += 1
@@ -240,6 +255,22 @@ def deploy_orchs(conf, seed, parallel, total, enable_stdout, enable_stderr):
       seed += 1
     elif num_completed >= total:
       break
+
+
+def replay_orch(conf, input_file, enable_stdout, enable_stderr):
+  addrs = sorted(conf['addrs'][:6])
+  port = conf['ports'][0]
+
+  if manage_orch(conf,
+                 port,
+                 'NONE',
+                 addrs,
+                 enable_stdout,
+                 enable_stderr,
+                 mode='replay',
+                 input_file=input_file) == 100:
+    print('orch failed')
+    exit(1)
 
 
 if __name__ == '__main__':
@@ -262,11 +293,9 @@ clean:        <command to clean up a cluster>
 node_dir:	 	  <directory where node stores all hard state>
 listen_ports: <list of ports where nodes are listening>
 addr_range:   <list of values for last octet available for use>
-strategy:     ('random_all' | 'random_cons' | 'explore' | 'replay')
-  - 'random_all'  (WIP) randomize hyperparameters
-  - 'random_cons' keep consistent, default hyperparameters
-  - 'explore'     (WIP) deployer tracks and manages choices
-  - 'replay'      (WIP) replay some run record
+# strategy:     ('random_all' | 'random_cons' | 'explore' | 'replay')
+#   - 'random_cons' keep consistent, default hyperparameters
+#   - 'visited'     (WIP) deployer tracks and manages choices
 ''')
   parser.add_argument('--yaml',
                       required=True,
@@ -282,6 +311,16 @@ strategy:     ('random_all' | 'random_cons' | 'explore' | 'replay')
                       type=int,
                       help='number of orchestrations to run total')
   parser.add_argument('--seed', '-s', default=0, type=int, help='starting seed')
+  parser.add_argument('--mode',
+                      choices=['rand', 'replay', 'visited'],
+                      default='rand',
+                      help='''
+                      strategy for exploration. 
+                      replay only allows total=1, parallel=1, and some input_file=1
+                      ''')
+  parser.add_argument('--input-file',
+                      required=False,
+                      help='only used for replay. the trace to replay')
   parser.add_argument('--enable-stderr',
                       action='store_true',
                       help='enables printing of orch stderr')
@@ -289,6 +328,10 @@ strategy:     ('random_all' | 'random_cons' | 'explore' | 'replay')
                       action='store_true',
                       help='enables printing of orch stdout')
   args = parser.parse_args()
+  if args.mode == 'replay' and (args.total != 1 or args.parallel != 1 or
+                                not args.input_file):
+    print("replay only allows total=1, parallel=1, and some input_file=1")
+    exit(1)
 
   conf = None
   with open(args.yaml, 'r') as fin:
@@ -304,5 +347,8 @@ strategy:     ('random_all' | 'random_cons' | 'explore' | 'replay')
   to_print['addrs'] = [conf['addrs'][0], '...', conf['addrs'][-1]
                       ] if len(conf['addrs']) > 1 else [conf['addrs'][0]]
   print('successfully loaded config:', json.dumps(to_print, indent=2))
-  deploy_orchs(conf, args.seed, args.parallel, args.total, args.enable_stdout,
-               args.enable_stderr)
+  if args.mode != 'replay':
+    deploy_orchs(conf, args.seed, args.parallel, args.total, args.enable_stdout,
+                 args.enable_stderr)
+  else:
+    replay_orch(conf, args.input_file, args.enable_stdout, args.enable_stderr)

@@ -7,3 +7,4 @@ rm -f /tmp/validate_$1
 rm -f /tmp/filter_$2_$5
 rm -f /tmp/filter_$3_$5
 rm -f /tmp/filter_$4_$5
+rm -f /tmp/trace_$1
