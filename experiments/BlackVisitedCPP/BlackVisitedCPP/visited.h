@@ -4,6 +4,10 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <iostream>
+#include <fstream>
+#include <exception>
+#include <stack>
 
 #include "MapTreeNode.h"
 
@@ -35,6 +39,8 @@ private:
   std::unordered_map<std::string, int> input_tokens_map;
   MapTreeNode* rootNode = NULL;
   MapTreeNode* currentNode = NULL;
+  const std::string FILE_VALS_DELIMETER = ";";
+  const std::string FILE_ROUTE_DELIMETER = "---";
 
 int add_token(const std::string& token);
 
@@ -74,6 +80,11 @@ public:
   // (either file descriptor or string, whatever you prefer)
   // writes the currently explored paths to some file (+ counts, ideally)
   // can be in any format, we can do post-processing to extract usable data out
-  // of it
+  // output format:
+  // N - number of tokens in map of string token
+  // N lines of pairs of token;id
+  // then all registered routes in token id format separated by new line
   void write_paths(std::string out_file);
+  void read_paths(std::string in_file);
+
 };

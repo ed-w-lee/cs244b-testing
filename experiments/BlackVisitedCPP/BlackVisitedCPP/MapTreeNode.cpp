@@ -35,3 +35,7 @@ std::unordered_map<int, size_t>* MapTreeNode::get_counts(){
 int MapTreeNode::get_count(){
     return count;
 }
+
+std::pair<std::unordered_map<int, MapTreeNode*>::iterator, std::unordered_map<int, MapTreeNode*>::iterator> MapTreeNode::get_iterators(){
+    return std::make_pair(mapMemory.begin(), mapMemory.end());
+}

@@ -37,6 +37,23 @@ int main()
 
 	delete(resListCount);
 
+	std::cout << "Save result to file visitedList.tmp" << std::endl;
+
+	visitedList.write_paths("visitedList.tmp");
+
+	std::cout << "Read file to other visited to check visitedList.tmp" << std::endl;
+	Visited visitedListRead(10, 100);
+	visitedListRead.read_paths("visitedList.tmp");
+	visitedListRead.end_txn();
+
+	std::unordered_map<int, size_t>* resListCountRead = visitedListRead.get_counts();
+	
+	for (std::pair<int, size_t> v : *resListCountRead){
+		std::cout << v.first << " : " << v.second << std::endl;
+	}
+
+	delete(resListCountRead);
+
 	std::cout << "Basic test 2: input only ids " << std::endl;
 
 	Visited visitedMain(10, 100);

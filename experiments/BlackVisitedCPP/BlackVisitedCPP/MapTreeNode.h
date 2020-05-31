@@ -12,6 +12,7 @@ public:
 	MapTreeNode* getElement(const int childId);
     std::unordered_map<int, size_t>* get_counts();
     int get_count();
+    std::pair<std::unordered_map<int, MapTreeNode*>::iterator, std::unordered_map<int, MapTreeNode*>::iterator> get_iterators();
 
 protected:
 	int inc();
