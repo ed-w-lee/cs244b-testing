@@ -33,7 +33,7 @@ RRandDecider::RRandDecider(std::string seed, std::string trace_file,
 }
 
 void RRandDecider::fill_random(void *buf, size_t buf_len) {
-  printf("[DECIDER] filling random with len %lu\n", buf_len);
+  printf("[RANDOM] filling random with len %lu\n", buf_len);
   for (size_t i = 0; i < buf_len; i += 4) {
     int res = rng();
     *(int *)((char *)buf + i) = res;
@@ -44,11 +44,11 @@ void RRandDecider::fill_random(void *buf, size_t buf_len) {
 
 int RRandDecider::get_next_node(int num_alive_nodes, std::set<int> &nodes,
                                 std::set<int> &clients) {
-  printf("[DECIDER] getting next node\n");
+  printf("[RANDOM] getting next node\n");
   size_t tot_avail_nodes = node_pref * nodes.size() + clients.size();
   int node_idx = -1;
   if (tot_avail_nodes > 0 && num_alive_nodes > 0) {
-    printf("[DECIDER] choosing from %lu nodes and %lu clients\n", nodes.size(),
+    printf("[RANDOM] choosing from %lu nodes and %lu clients\n", nodes.size(),
            clients.size());
     size_t to_run = rng() % tot_avail_nodes;
     if (to_run < node_pref * nodes.size()) {
@@ -89,7 +89,7 @@ int RRandDecider::get_next_node(int num_alive_nodes, std::set<int> &nodes,
     }
     node_poll_counts[node_idx]++;
   }
-  printf("[DECIDER] chose %d as node to return\n", node_idx);
+  printf("[RANDOM] chose %d as node to return\n", node_idx);
   fout << trace_names.at(NEXT_NODE) << node_idx << std::endl;
   return node_idx;
 }
@@ -267,3 +267,31 @@ bool ReplayDecider::validate_and_replay(DecideEvent ev) {
   }
   return (decision == 1);
 }
+
+// VisitedDecider::VisitedDecider(std::string seed, std::string trace_file,
+//                                std::string visited_file, size_t num_nodes)
+//     : Decider(), visited_file(visited_file), vis(10, 40) {
+//   fout = std::ofstream(trace_file, std::ofstream::out |
+//   std::ofstream::trunc);
+
+//   std::seed_seq seed_seq(seed.begin(), seed.end());
+//   rng = std::mt19937(seed_seq);
+
+//   vis.read_paths(visited_file);
+// }
+
+// void VisitedDecider::fill_random(void *buf, size_t buf_len) {
+//   // we count fill_random as a purely random event
+//   printf("[VIS_DEC] filling random with len %lu\n", buf_len);
+//   for (size_t i = 0; i < buf_len; i += 4) {
+//     int res = rng();
+//     *(int *)((char *)buf + i) = res;
+//     fout << trace_names.at(RANDOM) << res << ',';
+//   }
+//   fout << std::endl;
+// }
+
+// int VisitedDecider::get_next_node(int num_alive_nodes, std::set<int> &nodes,
+//                                   std::set<int> &clients) {
+//   printf("blah");
+// }

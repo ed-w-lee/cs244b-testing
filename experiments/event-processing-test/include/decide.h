@@ -1,9 +1,12 @@
 #pragma once
 
 #include <fstream>
+#include <list>
 #include <random>
 #include <set>
 #include <vector>
+
+#include "visited.h"
 
 // enum DecideEvent {
 //   NEXT_NODE,
@@ -137,3 +140,33 @@ private:
 
   bool validate_and_replay(DecideEvent ev);
 };
+
+// class VisitedDecider : public Decider {
+// public:
+//   VisitedDecider(std::string seed, std::string trace_file,
+//                  std::string visited_file, size_t num_nodes = 3);
+
+//   void fill_random(void *buf, size_t buf_len) override;
+
+//   int get_next_node(int num_alive_nodes, std::set<int> &nodes,
+//                     std::set<int> &clients) override;
+//   bool should_send_msg() override;
+
+//   bool should_fail_on_send() override;
+//   bool should_fail_on_connect() override;
+
+//   bool should_fail_on_write() override;
+//   bool should_fail_on_fsync() override;
+//   bool should_rename_on_fsync() override;
+
+//   bool should_revive() override;
+
+//   bool c_should_fail_on_send() override;
+//   bool c_should_fail_on_connect() override;
+
+// private:
+//   std::mt19937 rng;
+//   std::ofstream fout;
+//   std::string visited_file;
+//   Visited vis;
+// };

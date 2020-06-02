@@ -115,6 +115,7 @@ def manage_orch(conf,
             --node-dir '{node_dir}'
             --listen-port '{port}'
             --replay-file '{input_file}'
+						--visited-file '/tmp/blah'
             '''
   command = command.format(mode=mode,
                            seed=seed,

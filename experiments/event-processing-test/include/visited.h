@@ -1,13 +1,13 @@
 #pragma once
 
+#include <exception>
+#include <fstream>
+#include <iostream>
 #include <list>
+#include <stack>
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <iostream>
-#include <fstream>
-#include <exception>
-#include <stack>
 
 #include "MapTreeNode.h"
 
@@ -34,16 +34,6 @@ private:
 */
 
 class Visited {
-private:
-  int chain_length, max_val, last_token_id = 1;
-  std::unordered_map<std::string, int> input_tokens_map;
-  MapTreeNode* rootNode = NULL;
-  MapTreeNode* currentNode = NULL;
-  const std::string FILE_VALS_DELIMETER = ";";
-  const std::string FILE_ROUTE_DELIMETER = "---";
-
-int add_token(const std::string& token);
-
 public:
   // Creates a Visited that tracks `chain_length - 1` str(NodeTrace) and then
   // a variable-length expanded Node Trace, where the maximum value of a node in
@@ -53,8 +43,9 @@ public:
   // syscall_end), all values v starting with node_idx satisfy 0 <= v < max_val
   //
   // ideally, consumes <50 MB of memory
-  Visited(int chain_length, int max_val): chain_length(chain_length), max_val(max_val)
-                                  , rootNode(new MapTreeNode(max_val)), currentNode(rootNode){};
+  Visited(int chain_length, int max_val)
+      : chain_length(chain_length), max_val(max_val),
+        rootNode(new MapTreeNode(max_val)), currentNode(rootNode){};
 
   // takes vector of length `chain_length - 1` containing str(NodeTraces)
   //
@@ -72,7 +63,7 @@ public:
   // returns map from syscall -> count
   //
   // (in txn, called after register_node or register_syscall)
-  std::unordered_map<int, size_t>* get_counts();
+  std::unordered_map<int, size_t> *get_counts();
 
   // (in txn, ends the txn)
   void end_txn();
@@ -87,4 +78,13 @@ public:
   void write_paths(std::string out_file);
   void read_paths(std::string in_file);
 
+private:
+  int chain_length, max_val, last_token_id = 1;
+  std::unordered_map<std::string, int> input_tokens_map;
+  MapTreeNode *rootNode = NULL;
+  MapTreeNode *currentNode = NULL;
+  const std::string FILE_VALS_DELIMETER = ";";
+  const std::string FILE_ROUTE_DELIMETER = "---";
+
+  int add_token(const std::string &token);
 };

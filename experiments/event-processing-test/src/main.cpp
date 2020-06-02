@@ -105,6 +105,7 @@ enum config_field {
   NODE_DIR,
   LISTEN_PORT,
   REPLAY_FILE,
+  VISITED_FILE,
 };
 
 struct orch_config {
@@ -118,6 +119,7 @@ struct orch_config {
   std::string node_dir;
   in_port_t listen_port;
   std::string replay_file;
+  std::string visited_file;
 };
 
 bool validate_args(int argc, char **argv, orch_config &config) {
@@ -154,6 +156,8 @@ bool validate_args(int argc, char **argv, orch_config &config) {
           next_arg = LISTEN_PORT;
         } else if (actual_spec.compare("replay-file") == 0) {
           next_arg = REPLAY_FILE;
+        } else if (actual_spec.compare("visited-file") == 0) {
+          next_arg = VISITED_FILE;
         } else {
           fprintf(stderr, "unexpected specifier %s\n", actual_spec.c_str());
           return false;
@@ -274,6 +278,16 @@ bool validate_args(int argc, char **argv, orch_config &config) {
       }
       break;
     }
+    case VISITED_FILE: {
+      next_arg = SPECIFIER;
+      if (arg.length() == 0) {
+        fprintf(stderr, "visited-file should not be empty\n");
+        return false;
+      } else {
+        config.visited_file = arg;
+      }
+      break;
+    }
     }
   }
 
@@ -287,6 +301,10 @@ bool validate_args(int argc, char **argv, orch_config &config) {
   if ((config.mode == orch_mode::RAND || config.mode == orch_mode::VISITED) &&
       config.seed.empty()) {
     fprintf(stderr, "rand/visited mode requires seed\n");
+    return false;
+  }
+  if (config.mode == orch_mode::VISITED && config.visited_file.empty()) {
+    fprintf(stderr, "visited mode requires visited file\n");
     return false;
   }
   for (const auto &new_addr : config.new_addrs) {
@@ -351,7 +369,8 @@ int main(int argc, char **argv) {
       {},                // new_addrs
       "",                // node_dir
       0,                 // listen_port
-      "",
+      "",                // replay file
+      ""                 // visited file
   };
   if (!validate_args(argc, argv, config)) {
     // too lazy to do proper arg parsing
@@ -372,6 +391,9 @@ int main(int argc, char **argv) {
             "--replay-file <file>\n"
             "\t- if mode=replay, replay <file>. otherwise create replayable "
             "trace in <file>\n"
+            "--visited-file <file>\n"
+            "\t- if mode=visited, read (if exists) and write visited paths "
+            "from <file>"
             "\n"
             "commands should be delimited by #, not spaces\n",
             argv[0]);
@@ -389,6 +411,11 @@ int main(int argc, char **argv) {
     decider = new ReplayDecider(config.replay_file);
     break;
   }
+  // case orch_mode::VISITED: {
+  //   decider = new VisitedDecider(config.seed, config.replay_file,
+  //                                config.visited_file);
+  //   break;
+  // }
   default: {
     fprintf(stderr, "unsupported mode\n");
     exit(1);
@@ -505,15 +532,8 @@ int main(int argc, char **argv) {
 
   unsigned long long cnt = 0;
   unsigned long long it = 0;
-  bool has_sent = false;
   int num_alive_nodes = NUM_NODES;
   while (NUM_ITERS <= 0 || it++ < NUM_ITERS) {
-    printf("[ORCH] has_sent: %s\n", has_sent ? "true" : "false");
-    if (has_sent) {
-      proxy.poll_for_events(true);
-      has_sent = false;
-    }
-
     {
       printf("[ORCH] printing state\n");
       proxy.print_state();
@@ -578,7 +598,9 @@ int main(int argc, char **argv) {
 
       auto &manager = managers[node_idx];
       bool to_continue;
+      bool has_sent;
       do {
+        has_sent = false;
         to_continue = false;
         Filter::Event ev = manager.to_next_event();
         switch (ev) {
@@ -587,7 +609,6 @@ int main(int argc, char **argv) {
             decider->fill_random(buf, buflen);
           });
           to_continue = true;
-          has_sent = false;
           break;
         }
         case Filter::EV_CONNECT:
@@ -610,23 +631,18 @@ int main(int argc, char **argv) {
             }
             fflush(stdout);
             manager.toggle_node();
-            has_sent = false;
-            to_continue = false;
           } else {
             int res = manager.allow_event(ev);
             if (res < 0) {
               printf("[ORCH] Send/connect failed\n");
-              has_sent = false;
-              to_continue = true;
             } else {
               has_sent = true;
-              to_continue = false;
             }
+            to_continue = true;
           }
           break;
         }
         case Filter::EV_WRITE: {
-          to_continue = true;
           proxy.set_alive(node_idx);
           waiting_nodes.insert(node_idx);
           int ret = manager.handle_write(ev, [&](size_t max_write) -> size_t {
@@ -651,8 +667,8 @@ int main(int argc, char **argv) {
             }
             fflush(stdout);
             manager.toggle_node();
-            to_continue = false;
-            has_sent = false;
+          } else {
+            to_continue = true;
           }
           break;
         }
@@ -674,8 +690,6 @@ int main(int argc, char **argv) {
             }
             fflush(stdout);
             manager.toggle_node();
-            has_sent = false;
-            to_continue = false;
           } else {
             manager.handle_fsync(ev, [&](size_t max_ops) -> size_t {
               if (decider->should_rename_on_fsync()) {
@@ -684,7 +698,6 @@ int main(int argc, char **argv) {
                 return 0;
               }
             });
-            has_sent = false;
             to_continue = true;
           }
           break;
@@ -698,7 +711,6 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Revived node - %d\n", node_idx);
             manager.toggle_node();
             proxy.toggle_node(node_idx);
-            has_sent = false;
             to_continue = true;
           }
           break;
@@ -716,57 +728,74 @@ int main(int argc, char **argv) {
           exit(2);
         }
         }
+        if (has_sent) {
+          proxy.poll_for_events(true);
+          has_sent = false;
+        }
       } while (to_continue);
     } else {
       // it's a client
       auto &client = clients[node_idx - ClientFilter::CLIENT_OFFS];
-      ClientFilter::Event ev = client.to_next_event();
-      switch (ev) {
-      case ClientFilter::EV_CLOSE: {
-        has_sent = client.handle_close();
-        break;
-      }
-      case ClientFilter::EV_CONNECT:
-      case ClientFilter::EV_SENDTO: {
-        if ((ev == ClientFilter::EV_CONNECT &&
-             decider->c_should_fail_on_connect()) ||
-            (ev == ClientFilter::EV_SENDTO &&
-             decider->c_should_fail_on_send())) {
-          fprintf(stderr, "Killed client - %d\n", node_idx);
+
+      bool has_sent, to_continue;
+      do {
+        has_sent = false;
+        to_continue = false;
+
+        ClientFilter::Event ev = client.to_next_event();
+        switch (ev) {
+        case ClientFilter::EV_CLOSE: {
+          has_sent = client.handle_close();
+          to_continue = true;
+          break;
+        }
+        case ClientFilter::EV_CONNECT:
+        case ClientFilter::EV_SENDTO: {
+          if ((ev == ClientFilter::EV_CONNECT &&
+               decider->c_should_fail_on_connect()) ||
+              (ev == ClientFilter::EV_SENDTO &&
+               decider->c_should_fail_on_send())) {
+            fprintf(stderr, "Killed client - %d\n", node_idx);
+            printf("[ORCH STATE] Toggled client - %d\n", node_idx);
+            proxy.toggle_node(node_idx);
+            client.toggle_client();
+          } else {
+            int res = client.allow_event(ev);
+            if (res < 0) {
+              printf("[ORCH] Send/connect failed\n");
+            } else {
+              has_sent = true;
+            }
+            to_continue = true;
+          }
+          break;
+        }
+        case ClientFilter::EV_DEAD: {
+          // just revive since client being dead doesn't really change anything
+          fprintf(stderr, "Revived client - %d\n", node_idx);
           printf("[ORCH STATE] Toggled client - %d\n", node_idx);
           proxy.toggle_node(node_idx);
           client.toggle_client();
-          has_sent = false;
-        } else {
-          int res = client.allow_event(ev);
-          if (res < 0) {
-            printf("[ORCH] Send/connect failed\n");
-          } else {
-            has_sent = true;
-          }
+          to_continue = true;
+          break;
         }
-        break;
-      }
-      case ClientFilter::EV_DEAD: {
-        // just revive since client being dead doesn't really change anything
-        fprintf(stderr, "Revived client - %d\n", node_idx);
-        printf("[ORCH STATE] Toggled client - %d\n", node_idx);
-        proxy.toggle_node(node_idx);
-        client.toggle_client();
-        break;
-      }
-      case ClientFilter::EV_RECVING: {
-        non_recv_clients.erase(node_idx);
-        break;
-      }
-      case Filter::EV_EXIT: {
-        fflush(stdout);
-        fprintf(stderr, "[ORCH] client %d exited unexpectedly.\n", node_idx);
-        printf("[ORCH] client %d exited unexpectedly.\n", node_idx);
-        kill_children();
-        exit(3);
-      }
-      }
+        case ClientFilter::EV_RECVING: {
+          non_recv_clients.erase(node_idx);
+          break;
+        }
+        case Filter::EV_EXIT: {
+          fflush(stdout);
+          fprintf(stderr, "[ORCH] client %d exited unexpectedly.\n", node_idx);
+          printf("[ORCH] client %d exited unexpectedly.\n", node_idx);
+          kill_children();
+          exit(3);
+        }
+        }
+        if (has_sent) {
+          proxy.poll_for_events(true);
+          has_sent = false;
+        }
+      } while (to_continue);
     }
   }
 
