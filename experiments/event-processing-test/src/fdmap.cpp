@@ -228,7 +228,7 @@ void FdMap::clear_nodefds(int node) {
 }
 
 void FdMap::print_state() {
-  if (false) {
+  if (true) {
     return;
   }
   printf("[FDMAP STATE] connecting_proxyfds:\n");

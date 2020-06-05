@@ -115,7 +115,7 @@ def manage_orch(conf,
             --node-dir '{node_dir}'
             --listen-port '{port}'
             --replay-file '{input_file}'
-						--visited-file '/tmp/blah'
+						--visited-file '/tmp/visited_{mode}_{seed}'
             '''
   command = command.format(mode=mode,
                            seed=seed,
@@ -160,11 +160,18 @@ def manage_orch(conf,
     return 100
 
 
-def start_new_manage_orch(conf, port, addrs, seed, enable_stdout,
+def start_new_manage_orch(conf, port, addrs, mode, seed, enable_stdout,
                           enable_stderr):
   child_pid = os.fork()
   if child_pid == 0:
-    exit(manage_orch(conf, port, seed, addrs, enable_stdout, enable_stderr))
+    exit(
+        manage_orch(conf,
+                    port,
+                    seed,
+                    addrs,
+                    enable_stdout,
+                    enable_stderr,
+                    mode=mode))
   return child_pid
 
 
@@ -181,7 +188,8 @@ def wait_for_children_to_finish():
       exit(1)
 
 
-def deploy_orchs(conf, seed, parallel, total, enable_stdout, enable_stderr):
+def deploy_orchs(conf, mode, seed, parallel, total, enable_stdout,
+                 enable_stderr):
   print('deploying...')
   num_rounds = 0
   num_completed = 0
@@ -194,7 +202,7 @@ def deploy_orchs(conf, seed, parallel, total, enable_stdout, enable_stderr):
   for _ in range(min(total, parallel)):
     # take next 6 addrs
     port, child_addrs = free_addrs.popleft()
-    child_pid = start_new_manage_orch(conf, port, child_addrs, seed,
+    child_pid = start_new_manage_orch(conf, port, child_addrs, mode, seed,
                                       enable_stdout, enable_stderr)
     child_status[child_pid] = (port, seed, child_addrs)
     num_rounds += 1
@@ -250,7 +258,7 @@ def deploy_orchs(conf, seed, parallel, total, enable_stdout, enable_stderr):
     if num_rounds < total:
       num_rounds += 1
       port, child_addrs = free_addrs.popleft()
-      child_pid = start_new_manage_orch(conf, port, child_addrs, seed,
+      child_pid = start_new_manage_orch(conf, port, child_addrs, mode, seed,
                                         enable_stdout, enable_stderr)
       child_status[child_pid] = (port, seed, child_addrs)
       seed += 1
@@ -349,7 +357,7 @@ addr_range:   <list of values for last octet available for use>
                       ] if len(conf['addrs']) > 1 else [conf['addrs'][0]]
   print('successfully loaded config:', json.dumps(to_print, indent=2))
   if args.mode != 'replay':
-    deploy_orchs(conf, args.seed, args.parallel, args.total, args.enable_stdout,
-                 args.enable_stderr)
+    deploy_orchs(conf, args.mode, args.seed, args.parallel, args.total,
+                 args.enable_stdout, args.enable_stderr)
   else:
     replay_orch(conf, args.input_file, args.enable_stdout, args.enable_stderr)

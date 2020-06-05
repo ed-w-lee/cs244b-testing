@@ -56,7 +56,7 @@ public:
   // takes child of current node to continue on txn
   // increments the child's count by 1
   //
-  // (in txn, called immediately after get_counts)
+  // (in txn, called immediately after get_counts or itself)
   // moves to given child node
   void register_child(int child);
 

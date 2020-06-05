@@ -42,7 +42,7 @@
 #include "filter.h"
 #include "proxy.h"
 
-static const int NUM_ITERS = 20000;
+static const int NUM_ITERS = 10000;
 static const int PRINT_EVERY = 100;
 static const int NUM_NODES = 3;
 static const int NUM_CLIENTS = 3;
@@ -411,11 +411,11 @@ int main(int argc, char **argv) {
     decider = new ReplayDecider(config.replay_file);
     break;
   }
-  // case orch_mode::VISITED: {
-  //   decider = new VisitedDecider(config.seed, config.replay_file,
-  //                                config.visited_file);
-  //   break;
-  // }
+  case orch_mode::VISITED: {
+    decider = new VisitedDecider(config.seed, config.replay_file,
+                                 config.visited_file);
+    break;
+  }
   default: {
     fprintf(stderr, "unsupported mode\n");
     exit(1);
@@ -575,6 +575,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[ORCH] Validation failed\n\n");
         printf("[ORCH] Validation failed\n\n");
         kill_children();
+        decider->write_metadata();
         exit(4);
       }
     }
@@ -725,6 +726,7 @@ int main(int argc, char **argv) {
           printf("[ORCH] node %d exited unexpectedly.\n", node_idx);
           fflush(stdout);
           kill_children();
+          decider->write_metadata();
           exit(2);
         }
         }
@@ -766,7 +768,6 @@ int main(int argc, char **argv) {
             } else {
               has_sent = true;
             }
-            to_continue = true;
           }
           break;
         }
@@ -788,6 +789,7 @@ int main(int argc, char **argv) {
           fprintf(stderr, "[ORCH] client %d exited unexpectedly.\n", node_idx);
           printf("[ORCH] client %d exited unexpectedly.\n", node_idx);
           kill_children();
+          decider->write_metadata();
           exit(3);
         }
         }
@@ -802,5 +804,6 @@ int main(int argc, char **argv) {
   printf("[ORCH] finished successfully\n");
   fflush(stdout);
   kill_children();
+  decider->write_metadata();
   exit(0);
 }
