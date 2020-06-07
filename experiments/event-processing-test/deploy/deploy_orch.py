@@ -3,12 +3,15 @@ import argparse
 import yaml
 import json
 import os
+import gc
 import sys
 import time
 import errno
 import shlex
 import subprocess
 from collections import deque
+
+from visited import VisitedTree
 
 __location__ = os.path.realpath(
     os.path.join(os.getcwd(), os.path.dirname(__file__)))
@@ -71,7 +74,8 @@ def manage_orch(conf,
                 enable_stdout,
                 enable_stderr,
                 mode='rand',
-                input_file='/tmp/replay_orch_{seed}'):
+                input_file='/tmp/replay_orch_{seed}',
+                my_vis=None):
   '''
   Manages an orch instance. Runs in a separate process in case we need to
   communicate with the instance.
@@ -92,30 +96,40 @@ def manage_orch(conf,
   }
 
   # start by cleaning up seed just in case
-  subprocess.run([os.path.join(__location__, 'cleanup.sh'), str(seed)])
+  my_clean_cmd = [
+      os.path.join(__location__, 'cleanup.sh'),
+      str(seed), *node_addrs,
+      str(port)
+  ]
+  subprocess.run(my_clean_cmd)
+  print('finished cleaning with {}'.format(my_clean_cmd))
   clean_cmd = shlex.split(conf['clean'].format(**format_nodes))
-  res = subprocess.run(clean_cmd)
-  print('finished cleaning with {} using {}'.format(res.returncode, clean_cmd))
+  subprocess.run(clean_cmd)
+  print('finished cleaning with {}'.format(clean_cmd))
+
+  if mode == 'visited' and my_vis:
+    print('writing visited file for {}'.format(seed))
+    my_vis.write_to('/tmp/visited_{mode}_{seed}'.format(mode=mode, seed=seed))
 
   delim = '#'  # just use as delimiter (assume typical commands don't include #)
-  conf['node_cmd'] = delim.join(
+  conf['my_node_cmd'] = delim.join(
       shlex.split(conf['node_cmd'].format(**format_nodes)))
-  conf['client_cmd'] = delim.join(
+  conf['my_client_cmd'] = delim.join(
       shlex.split(conf['client_cmd'].format(**format_nodes)))
-  conf['val_cmd'] = delim.join(
+  conf['my_val_cmd'] = delim.join(
       shlex.split(conf['val_cmd'].format(**format_nodes)))
   input_file = input_file.format(seed=seed)
   command = '''
             ./orch 
             --mode '{mode}'
             --seed '{seed}'
-            --node '{node_cmd}' 
-            --client '{client_cmd}' 
-            --val '{val_cmd}'
+            --node '{my_node_cmd}' 
+            --client '{my_client_cmd}' 
+            --val '{my_val_cmd}'
             --node-dir '{node_dir}'
             --listen-port '{port}'
             --replay-file '{input_file}'
-						--visited-file '/tmp/visited_{mode}_{seed}'
+            --visited-file '/tmp/visited_{mode}_{seed}'
             '''
   command = command.format(mode=mode,
                            seed=seed,
@@ -143,36 +157,10 @@ def manage_orch(conf,
         devnull = os.open('/dev/null', os.O_WRONLY)
         os.dup2(devnull, 2)
       exit(os.execv(command[0], command))
-    pid, status = os.waitpid(child_pid, 0)
-    if os.WIFEXITED(status) and os.WEXITSTATUS(status) < 100:
-      # clean up
-      print('exit status:', os.WEXITSTATUS(status))
-      os.system(conf['clean'])
-      return os.WEXITSTATUS(status)
-    print('was not an exit:', status)
-    print('WIFEXITED:', os.WIFEXITED(status))
-    print('WEXITSTATUS:', os.WEXITSTATUS(status))
-    print("WIFSIGNALED:", os.WIFSIGNALED(status))
-    print("WTERMSIG:", os.WTERMSIG(status))
-    return 100
+    return child_pid
   except OSError as e:
     print('manage_orch failed')
-    return 100
-
-
-def start_new_manage_orch(conf, port, addrs, mode, seed, enable_stdout,
-                          enable_stderr):
-  child_pid = os.fork()
-  if child_pid == 0:
-    exit(
-        manage_orch(conf,
-                    port,
-                    seed,
-                    addrs,
-                    enable_stdout,
-                    enable_stderr,
-                    mode=mode))
-  return child_pid
+    return -1
 
 
 def wait_for_children_to_finish():
@@ -202,12 +190,20 @@ def deploy_orchs(conf, mode, seed, parallel, total, enable_stdout,
   for _ in range(min(total, parallel)):
     # take next 6 addrs
     port, child_addrs = free_addrs.popleft()
-    child_pid = start_new_manage_orch(conf, port, child_addrs, mode, seed,
-                                      enable_stdout, enable_stderr)
+    child_pid = manage_orch(conf=conf,
+                            port=port,
+                            addrs=child_addrs,
+                            seed=seed,
+                            enable_stdout=enable_stdout,
+                            enable_stderr=enable_stderr,
+                            mode=mode)
+    if child_pid == -1:
+      exit(1)
     child_status[child_pid] = (port, seed, child_addrs)
     num_rounds += 1
     seed += 1
 
+  my_vis = VisitedTree()
   while True:
     try:
       pid, status = os.waitpid(-1, 0)
@@ -238,6 +234,19 @@ def deploy_orchs(conf, mode, seed, parallel, total, enable_stdout,
     del child_status[pid]
     free_addrs.append((child_port, child_addrs))
 
+    # update my_vis
+
+    succ_vis = VisitedTree()
+    res = succ_vis.get_from_file('/tmp/visited_{mode}_{seed}'.format(
+        mode=mode, seed=child_seed),
+                                 relative=True)
+    if res:
+      succ_vis.validate()
+      my_vis.add_other(succ_vis)
+      my_vis.validate()
+    succ_vis = None
+    gc.collect()
+
     # clean up everything but trace (unless run failed)
     if total > 1:
       node_addrs = child_addrs[1::2]
@@ -255,14 +264,24 @@ def deploy_orchs(conf, mode, seed, parallel, total, enable_stdout,
 
     time.sleep(1)
     num_completed += 1
+
     if num_rounds < total:
       num_rounds += 1
       port, child_addrs = free_addrs.popleft()
-      child_pid = start_new_manage_orch(conf, port, child_addrs, mode, seed,
-                                        enable_stdout, enable_stderr)
+      child_pid = manage_orch(conf=conf,
+                              port=port,
+                              addrs=child_addrs,
+                              seed=seed,
+                              enable_stdout=enable_stdout,
+                              enable_stderr=enable_stderr,
+                              mode=mode,
+                              my_vis=my_vis)
+      if child_pid == -1:
+        exit(1)
       child_status[child_pid] = (port, seed, child_addrs)
       seed += 1
     elif num_completed >= total:
+      my_vis.write_to('/tmp/visited_final')
       break
 
 
@@ -270,16 +289,19 @@ def replay_orch(conf, input_file, enable_stdout, enable_stderr):
   addrs = sorted(conf['addrs'][:6])
   port = conf['ports'][0]
 
-  if manage_orch(conf,
-                 port,
-                 'NONE',
-                 addrs,
-                 enable_stdout,
-                 enable_stderr,
-                 mode='replay',
-                 input_file=input_file) == 100:
-    print('orch failed')
+  child_pid = manage_orch(conf,
+                          port,
+                          'NONE',
+                          addrs,
+                          enable_stdout,
+                          enable_stderr,
+                          mode='replay',
+                          input_file=input_file)
+  if child_pid == -1:
+    print('manage_orch failed')
     exit(1)
+  else:
+    os.waitpid(child_pid, 0)
 
 
 if __name__ == '__main__':

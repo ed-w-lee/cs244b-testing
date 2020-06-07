@@ -15,14 +15,17 @@ static const std::unordered_map<DecideEvent, char> trace_names{
     {REVIVE, 'v'},  {C_SEND, 'p'},    {C_CONNECT, 'q'}};
 
 RRandDecider::RRandDecider(std::string seed, std::string trace_file,
-                           size_t num_nodes, size_t node_pref,
-                           bool death_enabled, size_t death_rate,
-                           size_t revive_rate, size_t fsync_rename_rate,
-                           size_t msg_delay_rate, size_t primary_percent)
+                           std::string visited_file, size_t num_nodes,
+                           size_t num_ops, size_t node_pref, bool death_enabled,
+                           size_t death_rate, size_t revive_rate,
+                           size_t fsync_rename_rate, size_t msg_delay_rate,
+                           size_t primary_percent)
     : Decider(), num_nodes(num_nodes), node_pref(node_pref),
       death_enabled(death_enabled), death_rate(death_rate),
       revive_rate(revive_rate), fsync_rename_rate(fsync_rename_rate),
-      msg_delay_rate(msg_delay_rate), primary_percent(primary_percent) {
+      msg_delay_rate(msg_delay_rate), primary_percent(primary_percent),
+      vis(num_ops, 40), num_ops(num_ops), visited_file(visited_file),
+      past_traces(), curr_node(-1), curr_trace("") {
 
   fout = std::ofstream(trace_file, std::ofstream::out | std::ofstream::trunc);
 
@@ -44,6 +47,27 @@ void RRandDecider::fill_random(void *buf, size_t buf_len) {
 
 int RRandDecider::get_next_node(int num_alive_nodes, std::set<int> &nodes,
                                 std::set<int> &clients) {
+  if (curr_node >= 0) {
+    // there was a previous node, update vis with its trace
+    std::ostringstream oss;
+    oss << curr_node << '-' << curr_trace.str();
+    curr_trace.str("");
+    curr_trace.clear();
+    std::string trace = oss.str();
+    past_traces.push_back(trace);
+    if (past_traces.size() > num_ops) {
+      past_traces.pop_front();
+    }
+    vis.end_txn();
+  }
+  // TODO - more advanced logic for order-reduction
+  std::list<std::string> my_ops(past_traces);
+  while (my_ops.size() < num_ops) {
+    my_ops.push_front("NONE");
+  }
+  printf("[RANDOM] my_ops size: %lu\n", my_ops.size());
+  vis.start_txn(my_ops);
+
   printf("[RANDOM] getting next node\n");
   size_t tot_avail_nodes = node_pref * nodes.size() + clients.size();
   int node_idx = -1;
@@ -91,36 +115,14 @@ int RRandDecider::get_next_node(int num_alive_nodes, std::set<int> &nodes,
   }
   printf("[RANDOM] chose %d as node to return\n", node_idx);
   fout << trace_names.at(NEXT_NODE) << node_idx << std::endl;
+  vis.register_child(node_idx);
+  curr_node = node_idx;
   return node_idx;
 }
 
 bool RRandDecider::should_send_msg() {
   bool ret = ((rng() % msg_delay_rate) != 0);
   fout << trace_names.at(SEND_MSG) << (ret ? "1" : "0") << std::endl;
-  return ret;
-}
-
-bool RRandDecider::should_fail_on_send() {
-  bool ret = should_die();
-  fout << trace_names.at(SEND) << (ret ? "1" : "0") << std::endl;
-  return ret;
-}
-
-bool RRandDecider::should_fail_on_connect() {
-  bool ret = should_die();
-  fout << trace_names.at(CONNECT) << (ret ? "1" : "0") << std::endl;
-  return ret;
-}
-
-bool RRandDecider::should_fail_on_write() {
-  bool ret = should_die();
-  fout << trace_names.at(WRITE) << (ret ? "1" : "0") << std::endl;
-  return ret;
-}
-
-bool RRandDecider::should_fail_on_fsync() {
-  bool ret = should_die();
-  fout << trace_names.at(FSYNC_FAIL) << (ret ? "1" : "0") << std::endl;
   return ret;
 }
 
@@ -133,29 +135,58 @@ bool RRandDecider::should_rename_on_fsync() {
 bool RRandDecider::should_revive() {
   bool ret = (rng() % revive_rate == 0);
   fout << trace_names.at(REVIVE) << (ret ? "1" : "0") << std::endl;
+  vis.register_child(REVIVE);
+  vis.register_child(ret ? SUCCESS : FAILURE);
   return ret;
 }
 
-bool RRandDecider::c_should_fail_on_send() {
-  bool ret = should_die();
-  fout << trace_names.at(C_SEND) << (ret ? "1" : "0") << std::endl;
-  return ret;
-}
+bool RRandDecider::should_fail_on_send() { return should_die(SEND); }
 
-bool RRandDecider::c_should_fail_on_connect() {
-  bool ret = should_die();
-  fout << trace_names.at(C_CONNECT) << (ret ? "1" : "0") << std::endl;
-  return ret;
-}
+bool RRandDecider::should_fail_on_connect() { return should_die(CONNECT); }
+
+bool RRandDecider::should_fail_on_write() { return should_die(WRITE); }
+
+bool RRandDecider::should_fail_on_fsync() { return should_die(FSYNC_FAIL); }
+
+bool RRandDecider::c_should_fail_on_send() { return should_die(C_SEND); }
+
+bool RRandDecider::c_should_fail_on_connect() { return should_die(C_CONNECT); }
 
 // maintain same rng regardless of death enabled or not
-bool RRandDecider::should_die() {
+// bool RRandDecider::should_die() {
+//   if (death_enabled) {
+//     return (rng() % death_rate) == 0;
+//   } else {
+//     rng();
+//     return false;
+//   }
+// }
+
+bool RRandDecider::should_die(DecideEvent ev) {
+  bool ret;
+  vis.register_child(ev);
   if (death_enabled) {
-    return (rng() % death_rate) == 0;
+    ret = (rng() % death_rate) == 0;
   } else {
+    ret = false;
     rng();
-    return false;
   }
+  vis.register_child(ret ? FAILURE : SUCCESS);
+  fout << trace_names.at(ev) << (ret ? "1" : "0") << std::endl;
+  if (ret) {
+    // failed, we should clear the trace and only have fail
+    curr_trace.str("");
+    curr_trace.clear();
+    curr_trace << FAILURE;
+  } else {
+    curr_trace << ev << ",";
+  }
+  return ret;
+}
+
+void RRandDecider::write_metadata() {
+  printf("[RANDOM] Writing paths to %s\n", visited_file.c_str());
+  vis.write_paths(visited_file);
 }
 
 ReplayDecider::ReplayDecider(std::string trace_file, size_t num_nodes)
@@ -316,7 +347,15 @@ int VisitedDecider::get_next_node(int num_alive_nodes, std::set<int> &nodes,
     if (past_traces.size() > num_ops) {
       past_traces.pop_front();
     }
+    vis.end_txn();
   }
+  // TODO - more advanced logic for order-reduction
+  std::list<std::string> my_ops(past_traces);
+  while (my_ops.size() < num_ops) {
+    my_ops.push_front("NONE");
+  }
+  printf("[VIS_DEC] my_ops size: %lu\n", my_ops.size());
+  vis.start_txn(my_ops);
 
   // use RRandom logic if not yet switched to Visited yet, or choosing nodes
   int node_idx = -1;
@@ -372,12 +411,6 @@ int VisitedDecider::get_next_node(int num_alive_nodes, std::set<int> &nodes,
     // if mixed and in Visited regime, choose randomly from available based on
     // counts
     printf("[VIS_DEC] Mixed and should use visited logic\n");
-    // TODO - more advanced logic for order-reduction
-    std::list<std::string> my_ops(past_traces);
-    while (my_ops.size() < num_ops) {
-      my_ops.push_front("NONE");
-    }
-    vis.start_txn(my_ops);
 
     std::unordered_map<int, size_t> my_counts;
 
@@ -436,10 +469,10 @@ int VisitedDecider::get_next_node(int num_alive_nodes, std::set<int> &nodes,
 
 bool VisitedDecider::should_send_msg() {
   // TODO just do same as RRandom for now, since no order-reduction
-  vis.register_child(SEND_MSG);
+  // vis.register_child(SEND_MSG);
   bool to_ret = ((rng() % msg_delay_rate) != 0);
   fout << trace_names.at(SEND_MSG) << (to_ret ? "1" : "0") << std::endl;
-  vis.register_child(to_ret ? SUCCESS : FAILURE);
+  // vis.register_child(to_ret ? SUCCESS : FAILURE);
   return to_ret;
 }
 
@@ -447,7 +480,7 @@ bool VisitedDecider::should_rename_on_fsync() {
   vis.register_child(FSYNC_RENAME);
   bool to_ret = ((rng() % fsync_rename_rate) == 0);
   fout << trace_names.at(FSYNC_RENAME) << (to_ret ? "1" : "0") << std::endl;
-  vis.register_child(to_ret ? SUCCESS : FAILURE);
+  // vis.register_child(to_ret ? SUCCESS : FAILURE);
   return to_ret;
 }
 
@@ -515,4 +548,7 @@ bool VisitedDecider::should_die(DecideEvent ev) {
   return ret;
 }
 
-void VisitedDecider::write_metadata() { vis.write_paths(visited_file); }
+void VisitedDecider::write_metadata() {
+  printf("[VIS_DEC] Writing paths to %s\n", visited_file.c_str());
+  vis.write_paths(visited_file);
+}

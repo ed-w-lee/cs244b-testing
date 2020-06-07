@@ -33,8 +33,8 @@ orch: $(SRC_DIR)/main.cpp $(OBJS)
 # client.o: $(HDR_DIR)/client.h $(SRC_DIR)/client.cpp
 # 	$(CXX) $(CXXFLAGS) -O -c $(SRC_DIR)/client.cpp
 
-testprog: $(TEST_DIR)/test.c
-	$(CXX) -o $@ $<
+testprog: $(SRC_DIR)/test.cpp $(OBJS)
+	$(CXX) -o $@ $< -lm $(OBJS) -I$(HDR_DIR)
 
 clean:
 	rm -f orch $(OBJS) testprog
@@ -48,5 +48,6 @@ cleantest:
 	rm -f /tmp/trace
 	rm -f /tmp/trace_*
 	rm -f /tmp/replay_orch_*
+	rm -f /tmp/visited_*
 
 .PHONY: all clean cleantest

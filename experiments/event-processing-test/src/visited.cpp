@@ -1,5 +1,8 @@
 #include "visited.h"
 
+#include <sstream>
+#include <stdexcept>
+
 void Visited::start_txn(std::list<std::string> &traces) {
   end_txn();
   for (const std::string &token : traces) {
@@ -38,10 +41,12 @@ void Visited::write_paths(std::string out_file) {
     std::ofstream out_file_stream;
     out_file_stream.open(out_file);
     if (out_file_stream.is_open()) {
-      out_file_stream << input_tokens_map.size() << std::endl;
+      out_file_stream << chain_length << '\n';
+      out_file_stream << input_tokens_map.size() << "\n";
       for (std::pair<std::string, int> v : input_tokens_map) {
         out_file_stream << v.first << FILE_VALS_DELIMETER << v.second << "\n";
       }
+      out_file_stream << '\n';
 
       std::list<std::pair<std::unordered_map<int, MapTreeNode *>::iterator,
                           std::unordered_map<int, MapTreeNode *>::iterator>>
@@ -55,22 +60,16 @@ void Visited::write_paths(std::string out_file) {
         }
         if (history.back().first == history.back().second) {
           history.pop_back();
-          if (!isRollback) {
-            out_file_stream << "\n";
-            for (std::pair<std::unordered_map<int, MapTreeNode *>::iterator,
-                           std::unordered_map<int, MapTreeNode *>::iterator>
-                     v : history) {
-              if (v.first != v.second) {
-                // TODO: not sure we need number, can just give all routes
-                // out_file_stream << (v.first)->first << FILE_VALS_DELIMETER <<
-                // (v.first)->second->get_count() << "\n";
-                out_file_stream << (v.first)->first << "\n";
-              }
-            }
-          }
+          out_file_stream << FILE_ROUTE_DELIMETER << '\n';
           isRollback = true;
         } else {
           isRollback = false;
+          out_file_stream << (history.back().first)->first
+                          << FILE_VALS_DELIMETER
+                          << (history.back().first)->second->get_count()
+                          << FILE_VALS_DELIMETER
+                          << (history.back().first)->second->get_old_count()
+                          << '\n';
           history.push_back((history.back().first)->second->get_iterators());
         }
       }
@@ -93,6 +92,12 @@ void Visited::read_paths(std::string in_file) {
     if (input_file_stream.is_open()) {
       std::string one_line;
       std::getline(input_file_stream, one_line);
+      int readChainLength = std::stoi(one_line);
+      if (chain_length != readChainLength) {
+        throw std::invalid_argument("chain lengths differ");
+      }
+
+      std::getline(input_file_stream, one_line);
       int mapSize = std::stoi(one_line);
       input_tokens_map.clear();
       for (int i = 0; i < mapSize; i++) {
@@ -100,9 +105,12 @@ void Visited::read_paths(std::string in_file) {
           std::string key =
               one_line.substr(0, one_line.find(FILE_VALS_DELIMETER));
           std::string value = one_line.substr(
-              one_line.find(FILE_VALS_DELIMETER) + FILE_VALS_DELIMETER.size(),
-              one_line.length());
-          input_tokens_map[key] = std::stoi(value);
+              one_line.find(FILE_VALS_DELIMETER) + 1, one_line.length());
+          int input_token_val = std::stoi(value);
+          input_tokens_map[key] = input_token_val;
+          if (input_token_val > last_token_id) {
+            last_token_id = input_token_val + 1;
+          }
           // std::cout << "DEBUG: " << key << ":" << value << "\n";
         } else {
           std::cerr << "[VISITED] ERROR: reading map values from file: "
@@ -111,11 +119,25 @@ void Visited::read_paths(std::string in_file) {
         }
       }
       // now reading tree
+      printf("[VISITED] reading tree\n");
+      std::list<MapTreeNode *> curr_depth;
       while (std::getline(input_file_stream, one_line)) {
         if (one_line.size() == 0) {
-          end_txn();
+          curr_depth.push_back(rootNode);
+        } else if (one_line.size() == 1 && one_line.compare("#") == 0) {
+          // if '#', this must terminate the current depth
+          curr_depth.pop_back();
+          currentNode = curr_depth.back();
         } else {
-          register_child(std::stoi(one_line));
+          // otherwise, must be entry to put in
+          std::istringstream ss(one_line);
+          std::string node, old_count, curr_count;
+          std::getline(ss, node, FILE_VALS_DELIMETER);
+          std::getline(ss, curr_count, FILE_VALS_DELIMETER);
+          std::getline(ss, old_count, FILE_VALS_DELIMETER);
+
+          register_child_read(std::stoi(node), (size_t)std::stoi(curr_count));
+          curr_depth.push_back(currentNode);
         }
         // std::cout << "DEBUG: " << one_line << "\n";
       }
@@ -127,18 +149,18 @@ void Visited::read_paths(std::string in_file) {
     }
   } catch (std::exception &e) {
     std::cerr << "[VISITED] CRITICAL: exception while read from file: "
-              << in_file << e.what() << "\n";
+              << in_file << " " << e.what() << "\n";
   }
 }
 
 int Visited::add_token(const std::string &token) {
-  if (last_token_id > max_val) {
-    return 0;
-  }
-
   if (input_tokens_map.find(token) == input_tokens_map.end()) {
     input_tokens_map[token] = last_token_id++;
   }
 
   return input_tokens_map[token];
+}
+
+void Visited::register_child_read(int child, size_t to_inc) {
+  currentNode = currentNode->addElement(child, true, to_inc);
 }

@@ -71,11 +71,12 @@ public:
 
 class RRandDecider : public Decider {
 public:
-  RRandDecider(std::string seed, std::string trace_file, size_t num_nodes = 3,
-               size_t node_pref = 2, bool death_enabled = true,
-               size_t death_rate = 400, size_t revive_rate = 30,
-               size_t fsync_rename_rate = 10, size_t msg_delay_rate = 5,
-               size_t primary_percent = 94);
+  RRandDecider(std::string seed, std::string trace_file,
+               std::string visited_file, size_t num_nodes = 3,
+               size_t num_ops = 5, size_t node_pref = 2,
+               bool death_enabled = true, size_t death_rate = 400,
+               size_t revive_rate = 30, size_t fsync_rename_rate = 10,
+               size_t msg_delay_rate = 5, size_t primary_percent = 94);
 
   void fill_random(void *buf, size_t buf_len) override;
 
@@ -94,6 +95,8 @@ public:
 
   bool c_should_fail_on_send() override;
   bool c_should_fail_on_connect() override;
+
+  void write_metadata() override;
 
 private:
   std::ofstream fout;
@@ -114,7 +117,14 @@ private:
 
   std::vector<int> node_poll_counts;
 
-  bool should_die();
+  Visited vis;
+  size_t num_ops;
+  std::string visited_file;
+  std::list<std::string> past_traces;
+  int curr_node;
+  std::ostringstream curr_trace;
+
+  bool should_die(DecideEvent ev);
 };
 
 class ReplayDecider : public Decider {
@@ -150,8 +160,8 @@ class VisitedDecider : public Decider {
 public:
   VisitedDecider(std::string seed, std::string trace_file,
                  std::string visited_file, size_t num_nodes = 3,
-                 size_t node_pref = 2, size_t num_ops = 10,
-                 size_t death_rate = 800, size_t revive_rate = 30,
+                 size_t node_pref = 2, size_t num_ops = 5,
+                 size_t death_rate = 600, size_t revive_rate = 30,
                  size_t fsync_rename_rate = 10, size_t msg_delay_rate = 5,
                  size_t primary_percent = 96);
 

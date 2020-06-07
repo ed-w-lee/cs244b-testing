@@ -392,8 +392,8 @@ int main(int argc, char **argv) {
             "\t- if mode=replay, replay <file>. otherwise create replayable "
             "trace in <file>\n"
             "--visited-file <file>\n"
-            "\t- if mode=visited, read (if exists) and write visited paths "
-            "from <file>"
+            "\t- if mode=visited, read (if exists). for mode=(rand|visited) "
+            "write visited paths from <file>"
             "\n"
             "commands should be delimited by #, not spaces\n",
             argv[0]);
@@ -404,7 +404,8 @@ int main(int argc, char **argv) {
   Decider *decider;
   switch (config.mode) {
   case orch_mode::RAND: {
-    decider = new RRandDecider(config.seed, config.replay_file);
+    decider =
+        new RRandDecider(config.seed, config.replay_file, config.visited_file);
     break;
   }
   case orch_mode::REPLAY: {

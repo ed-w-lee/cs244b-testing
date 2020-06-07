@@ -83,8 +83,10 @@ private:
   std::unordered_map<std::string, int> input_tokens_map;
   MapTreeNode *rootNode = NULL;
   MapTreeNode *currentNode = NULL;
-  const std::string FILE_VALS_DELIMETER = ";";
-  const std::string FILE_ROUTE_DELIMETER = "---";
+  const char FILE_VALS_DELIMETER = ';';
+  const char FILE_ROUTE_DELIMETER = '#';
 
   int add_token(const std::string &token);
+
+  void register_child_read(int child, size_t to_inc);
 };
