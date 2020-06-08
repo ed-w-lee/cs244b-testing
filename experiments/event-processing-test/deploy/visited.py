@@ -105,7 +105,7 @@ class VisitedTree:
         self.key_map[k] = str(self.max_id)
       key_remap[v] = self.key_map[k]
 
-    print(key_remap)
+    # print(key_remap)
     self.root.add_other(other.root, key_remap, self.chain_len, 0)
 
   def write_to(self, outfile):

@@ -186,6 +186,7 @@ def deploy_orchs(conf, mode, seed, parallel, total, enable_stdout,
   free_addrs = deque([
       (port, addr_set) for addr_set in addr_sets for port in conf['ports']
   ])
+  first_seed = seed
   child_status = {}
   for _ in range(min(total, parallel)):
     # take next 6 addrs
@@ -204,6 +205,7 @@ def deploy_orchs(conf, mode, seed, parallel, total, enable_stdout,
     seed += 1
 
   my_vis = VisitedTree()
+  exit_statuses = [None] * total
   while True:
     try:
       pid, status = os.waitpid(-1, 0)
@@ -219,6 +221,7 @@ def deploy_orchs(conf, mode, seed, parallel, total, enable_stdout,
     exit_status = os.WEXITSTATUS(status)
     print('manage_orch {} seed {} exited with {}'.format(
         pid, child_seed, exit_status))
+    exit_statuses[child_seed - first_seed] = exit_status
     if exit_status >= 100:
       # likely manage_orch exited
       print('manage_orch {}, seed {} exited unexpectedly'.format(
@@ -282,6 +285,7 @@ def deploy_orchs(conf, mode, seed, parallel, total, enable_stdout,
       seed += 1
     elif num_completed >= total:
       my_vis.write_to('/tmp/visited_final')
+      print(exit_statuses)
       break
 
 
