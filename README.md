@@ -14,3 +14,8 @@
 ./deploy/deploy_orch.py --yaml ./deploy/tcp_mvp.yaml --mode replay --input-file /tmp/replay_orch_{failed_seed} --enable-stderr 
 ```
 5. Logs for nodes should exist at `/tmp/filter_{addr}` and clients at `/tmp/client_{idx}`. Logs for the orchestrator itself should exist at `/tmp/trace_NONE`.
+
+**Note**: You may need to rebuild the Raft implementation, which you can do by first [installing Rust](https://www.rust-lang.org/tools/install), cloning [this repository](https://github.com/ed-w-lee/raft-in-rust/) and running
+```
+cargo build --example tcp_mvp
+```
