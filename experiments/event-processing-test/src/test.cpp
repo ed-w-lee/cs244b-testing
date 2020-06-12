@@ -32,7 +32,7 @@ int main(int argc, char *argv[]) {
 
   vis.end_txn();
 
-  traces = {"b", "d", "e"};
+  traces = {"a", "d", "b"};
   vis.start_txn(traces);
   vis.register_child(1);
   vis.register_child(2);
@@ -56,7 +56,7 @@ int main(int argc, char *argv[]) {
 
   Visited vis2(4, 10);
   vis2.read_paths("test.tmp");
-  traces = {"b", "d", "f"};
+  traces = {"a", "c", "e"};
   vis2.start_txn(traces);
   vis2.register_child(1);
   vis2.register_child(4);

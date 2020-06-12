@@ -206,6 +206,7 @@ def deploy_orchs(conf, mode, seed, parallel, total, enable_stdout,
 
   my_vis = VisitedTree()
   exit_statuses = [None] * total
+  path_counts = []
   while True:
     try:
       pid, status = os.waitpid(-1, 0)
@@ -215,7 +216,8 @@ def deploy_orchs(conf, mode, seed, parallel, total, enable_stdout,
 
     child_port, child_seed, child_addrs = child_status[pid]
     if not os.WIFEXITED(status):
-      print("unexpected status, didn't exit: {}".format(status))
+      print("unexpected status, didn't exit: ({}, {})".format(
+          child_seed, status))
       wait_for_children_to_finish()
       exit(1)
     exit_status = os.WEXITSTATUS(status)
@@ -249,6 +251,7 @@ def deploy_orchs(conf, mode, seed, parallel, total, enable_stdout,
       my_vis.validate()
     succ_vis = None
     gc.collect()
+    path_counts.append(my_vis.num_paths())
 
     # clean up everything but trace (unless run failed)
     if total > 1:
@@ -285,7 +288,8 @@ def deploy_orchs(conf, mode, seed, parallel, total, enable_stdout,
       seed += 1
     elif num_completed >= total:
       my_vis.write_to('/tmp/visited_final')
-      print(exit_statuses)
+      print('exits:', exit_statuses)
+      print('counts:', path_counts)
       break
 
 

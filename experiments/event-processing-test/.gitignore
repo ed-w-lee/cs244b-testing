@@ -1,6 +1,7 @@
 runs/
 *.o
 orch
+testprog
 venv/
 seeds/
 __pycache__/

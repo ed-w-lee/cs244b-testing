@@ -55,14 +55,14 @@ int RRandDecider::get_next_node(int num_alive_nodes, std::set<int> &nodes,
     curr_trace.clear();
     std::string trace = oss.str();
     past_traces.push_back(trace);
-    if (past_traces.size() > num_ops) {
+    if (past_traces.size() > num_ops - 1) {
       past_traces.pop_front();
     }
     vis.end_txn();
   }
   // TODO - more advanced logic for order-reduction
   std::list<std::string> my_ops(past_traces);
-  while (my_ops.size() < num_ops) {
+  while (my_ops.size() < num_ops - 1) {
     my_ops.push_front("NONE");
   }
   printf("[RANDOM] my_ops size: %lu\n", my_ops.size());
@@ -344,14 +344,14 @@ int VisitedDecider::get_next_node(int num_alive_nodes, std::set<int> &nodes,
     curr_trace.clear();
     std::string trace = oss.str();
     past_traces.push_back(trace);
-    if (past_traces.size() > num_ops) {
+    if (past_traces.size() > num_ops - 1) {
       past_traces.pop_front();
     }
     vis.end_txn();
   }
   // TODO - more advanced logic for order-reduction
   std::list<std::string> my_ops(past_traces);
-  while (my_ops.size() < num_ops) {
+  while (my_ops.size() < num_ops - 1) {
     my_ops.push_front("NONE");
   }
   printf("[VIS_DEC] my_ops size: %lu\n", my_ops.size());

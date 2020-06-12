@@ -35,6 +35,8 @@ class Node:
     self.inc_count(other.count)
 
   def write_to(self, fout):
+    if len(self.children) == 0:
+      return
     for k, n in self.children.items():
       fout.write(k + ';' + str(n.count) + ';0\n')
       n.write_to(fout)
@@ -45,8 +47,23 @@ class Node:
       # children should be converted
       for k, v in self.children.items():
         # print(depth + 1, k)
-        assert (k in key_map)
-        v.validate(key_map, chain_len, depth + 1)
+        if k not in key_map:
+          print(depth + 1, k)
+          return False
+        if not v.validate(key_map, chain_len, depth + 1):
+          print(depth + 1, k)
+          return False
+      return True
+    return True
+
+  def num_paths(self):
+    if len(self.children) == 0:
+      return 1
+    else:
+      tot_count = 0
+      for child in self.children.values():
+        tot_count += child.num_paths()
+      return tot_count
 
 
 class VisitedTree:
@@ -55,7 +72,7 @@ class VisitedTree:
     self.root = Node()
     self.key_map = {}
     self.chain_len = None
-    self.max_id = -1
+    self.max_id = 0
 
   def get_from_file(self, file, relative=False):
     if not os.path.isfile(file):
@@ -124,7 +141,11 @@ class VisitedTree:
     my_key_map = {}
     for k, v in self.key_map.items():
       my_key_map[v] = k
-    self.root.validate(my_key_map, self.chain_len, 0)
+    # print(json.dumps(my_key_map, sort_keys=True, indent=2))
+    assert (self.root.validate(my_key_map, self.chain_len, 0))
+
+  def num_paths(self):
+    return self.root.num_paths()
 
   def __str__(self):
     return 'key_map: {}, tree: {}'.format(
@@ -143,6 +164,7 @@ if __name__ == "__main__":
                         '-v',
                         help='validate the input tree',
                         action='store_true')
+  argparse.add_argument('--out-file', '-o', help='output file', required=False)
   argparse.add_argument('--add-file',
                         '-a',
                         help='File with the visited tree to add',
@@ -151,7 +173,7 @@ if __name__ == "__main__":
   args = argparse.parse_args()
   vis = VisitedTree()
   vis.get_from_file(args.input_file)
-  # print(str(vis))
+  print(str(vis))
 
   vis.write_to("/tmp/blah")
 

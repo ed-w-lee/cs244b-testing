@@ -161,9 +161,9 @@ public:
   VisitedDecider(std::string seed, std::string trace_file,
                  std::string visited_file, size_t num_nodes = 3,
                  size_t node_pref = 2, size_t num_ops = 5,
-                 size_t death_rate = 600, size_t revive_rate = 30,
+                 size_t death_rate = 400, size_t revive_rate = 30,
                  size_t fsync_rename_rate = 10, size_t msg_delay_rate = 5,
-                 size_t primary_percent = 96);
+                 size_t primary_percent = 94);
 
   void fill_random(void *buf, size_t buf_len) override;
 

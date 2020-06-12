@@ -5,10 +5,18 @@
 
 void Visited::start_txn(std::list<std::string> &traces) {
   end_txn();
+  if ((int)traces.size() != chain_length - 1) {
+    fprintf(stderr, "[VISITED] Incorrect traces length\n");
+    exit(1);
+  }
   for (const std::string &token : traces) {
     int childId = add_token(token);
     if (childId > 0) {
       register_child(childId);
+    } else {
+      fprintf(stderr, "[VISITED] unexpected value for child id for %s\n",
+              token.c_str());
+      exit(1);
     }
   }
 }
@@ -64,6 +72,8 @@ void Visited::write_paths(std::string out_file) {
           isRollback = true;
         } else {
           isRollback = false;
+          printf("DEBUG: %lu %d\n", history.size(),
+                 (history.back().first)->first);
           out_file_stream << (history.back().first)->first
                           << FILE_VALS_DELIMETER
                           << (history.back().first)->second->get_count()
@@ -109,15 +119,18 @@ void Visited::read_paths(std::string in_file) {
           int input_token_val = std::stoi(value);
           input_tokens_map[key] = input_token_val;
           if (input_token_val > last_token_id) {
-            last_token_id = input_token_val + 1;
+            last_token_id = input_token_val;
           }
-          // std::cout << "DEBUG: " << key << ":" << value << "\n";
+          // std::cout << "DEBUG: " << key << ":" << value << "," <<
+          // last_token_id
+          //           << "\n";
         } else {
           std::cerr << "[VISITED] ERROR: reading map values from file: "
                     << in_file << "\n";
           return;
         }
       }
+      last_token_id++;
       // now reading tree
       printf("[VISITED] reading tree\n");
       std::list<MapTreeNode *> curr_depth;
